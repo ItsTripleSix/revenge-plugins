@@ -21,13 +21,9 @@
   const runtime = {
     patches: [],
     refreshListeners: new Set(),
-    guardPatched: false,
     leftPatched: false,
     rightPatched: false,
     typingPatched: false,
-    liveChatInput: null,
-    refreshFrame: null,
-    refreshTimer: null,
     cleanup: null,
   };
 
@@ -182,165 +178,6 @@
     return null;
   }
 
-  function findInReactTree(node, predicate, seen = new Set(), depth = 0) {
-    if (node == null || depth > 60) return null;
-
-    if (Array.isArray(node)) {
-      for (const child of node) {
-        const found = findInReactTree(child, predicate, seen, depth + 1);
-        if (found) return found;
-      }
-      return null;
-    }
-
-    if (typeof node !== "object") return null;
-    if (seen.has(node)) return null;
-    seen.add(node);
-
-    try {
-      if (predicate(node)) return node;
-    } catch {}
-
-    const children = node.props?.children;
-    if (children !== undefined) {
-      return findInReactTree(children, predicate, seen, depth + 1);
-    }
-
-    return null;
-  }
-
-  function isSilentTypingToggle(node) {
-    if (!React.isValidElement(node)) return false;
-
-    const key = String(node.key ?? "");
-    return (
-      key.includes("silent-typing-toggle")
-      || node.props?.silentTypingMarker === true
-    );
-  }
-
-  function stripSilentTypingToggles(node) {
-    if (Array.isArray(node)) {
-      return node
-        .map(stripSilentTypingToggles)
-        .filter(child => child !== null && child !== undefined && child !== false);
-    }
-
-    if (!React.isValidElement(node)) return node;
-    if (isSilentTypingToggle(node)) return null;
-
-    const children = node.props?.children;
-    if (children === undefined) return node;
-
-    const cleaned = stripSilentTypingToggles(children);
-    if (cleaned === children) return node;
-
-    try {
-      return React.cloneElement(node, undefined, cleaned);
-    } catch {
-      return node;
-    }
-  }
-
-  function captureLiveChatInput(result) {
-    const node = findInReactTree(
-      result,
-      value => value?.props?.chatInputRef?.current,
-    );
-
-    const ref = node?.props?.chatInputRef?.current;
-    if (ref) runtime.liveChatInput = ref;
-  }
-
-  function forceComposerActionRerender(ref = runtime.liveChatInput) {
-    if (!ref) return false;
-
-    let text = "";
-    try {
-      text = String(ref.getText?.() ?? "");
-    } catch {}
-
-    const shouldShow = text.length === 0;
-    const first = shouldShow ? "hideSideActions" : "showSideActions";
-    const second = shouldShow ? "showSideActions" : "hideSideActions";
-
-    if (typeof ref[first] !== "function" || typeof ref[second] !== "function") {
-      return false;
-    }
-
-    try {
-      ref[first]();
-    } catch {
-      return false;
-    }
-
-    const finish = () => {
-      runtime.refreshFrame = null;
-      runtime.refreshTimer = null;
-      try {
-        ref[second]();
-      } catch {}
-    };
-
-    try {
-      if (runtime.refreshFrame != null && typeof cancelAnimationFrame === "function") {
-        cancelAnimationFrame(runtime.refreshFrame);
-      }
-    } catch {}
-    if (runtime.refreshTimer != null) {
-      try {
-        clearTimeout(runtime.refreshTimer);
-      } catch {}
-    }
-
-    if (typeof requestAnimationFrame === "function") {
-      runtime.refreshFrame = requestAnimationFrame(finish);
-    } else {
-      runtime.refreshTimer = setTimeout(finish, 0);
-    }
-
-    return true;
-  }
-
-  function refreshComposerSoon() {
-    setTimeout(() => forceComposerActionRerender(), 0);
-  }
-
-  function patchChatInputGuard() {
-    if (runtime.guardPatched) return true;
-
-    let wrapper = null;
-    try {
-      wrapper = findByName("ChatInputGuardWrapper", false)
-        ?? findByName("ChatInputGuardWrapper");
-    } catch {}
-
-    if (!wrapper) return false;
-
-    let target = null;
-    let method = null;
-
-    if (typeof wrapper.default === "function") {
-      target = wrapper;
-      method = "default";
-    } else if (wrapper?.type && typeof wrapper.type.render === "function") {
-      target = wrapper.type;
-      method = "render";
-    }
-
-    if (!target || !method) return false;
-
-    runtime.patches.push(
-      after(method, target, (_, result) => {
-        captureLiveChatInput(result);
-        return result;
-      }),
-    );
-
-    runtime.guardPatched = true;
-    return true;
-  }
-
   function getKeyboardIcon() {
     return (
       getAssetIDByName("KeyboardIcon")
@@ -391,10 +228,12 @@
     );
   }
 
-  function SilentTypingButton() {
+  function SilentTypingSlot({ side }) {
     usePluginRefresh();
 
     if (storage.showButton === false) return null;
+    if ((storage.buttonSide ?? "left") !== side) return null;
+
     const enabled = storage.enabled === true;
 
     return React.createElement(
@@ -424,24 +263,23 @@
     );
   }
 
-  function wrapWithButton(result, buttonFirst) {
-    const cleaned = stripSilentTypingToggles(result);
-    const button = React.createElement(SilentTypingButton, {
-      key: "silent-typing-toggle",
-      silentTypingMarker: true,
+  function wrapWithSlot(result, side) {
+    const slot = React.createElement(SilentTypingSlot, {
+      key: `silent-typing-slot-${side}`,
+      side,
     });
 
     return React.createElement(
       RN.View,
       {
-        testID: "itsTripleSixSilentTypingWrap",
+        testID: `itsTripleSixSilentTyping-${side}`,
         style: {
           flexDirection: "row",
           alignItems: "center",
         },
       },
-      buttonFirst ? button : cleaned,
-      buttonFirst ? cleaned : button,
+      side === "right" ? slot : result,
+      side === "right" ? result : slot,
     );
   }
 
@@ -453,14 +291,7 @@
     if (!found) return false;
 
     runtime.patches.push(
-      after(found.method, found.target, (_, result) => {
-        const cleaned = stripSilentTypingToggles(result);
-        const useRight = storage.buttonSide === "right";
-        const shouldInject = (side === "right") === useRight;
-
-        if (!shouldInject || storage.showButton === false) return cleaned;
-        return wrapWithButton(cleaned, side === "right");
-      }),
+      after(found.method, found.target, (_, result) => wrapWithSlot(result, side)),
     );
 
     runtime[flag] = true;
@@ -493,11 +324,7 @@
   }
 
   function installPatches() {
-    return [
-      patchChatInputGuard(),
-      patchComposer(),
-      patchTyping(),
-    ];
+    return [patchComposer(), patchTyping()];
   }
 
   function SettingRow({ title, description, control }) {
@@ -556,6 +383,10 @@
       String(clampByte(storage[storageKey])),
     );
 
+    React.useEffect(() => {
+      setText(String(clampByte(storage[storageKey])));
+    }, [storage[storageKey]]);
+
     return React.createElement(RN.TextInput, {
       value: text,
       keyboardType: "number-pad",
@@ -601,6 +432,7 @@
   }) {
     const hex = normalizeHex(storage[storageKey], fallback);
     const alpha = clampByte(storage[alphaKey]);
+
     const selectColor = () => {
       if (!openColorPicker(storageKey, fallback)) {
         Toasts?.showToast?.("Color picker unavailable on this Discord build");
@@ -618,17 +450,23 @@
           backgroundColor: "#2B2D31",
         },
       },
-      React.createElement(RN.Text, {
-        style: { color: "#F2F3F5", fontSize: 16, fontWeight: "700" },
-      }, title),
-      React.createElement(RN.Text, {
-        style: {
-          color: "#B5BAC1",
-          fontSize: 12,
-          marginTop: 3,
-          marginBottom: 12,
+      React.createElement(
+        RN.Text,
+        { style: { color: "#F2F3F5", fontSize: 16, fontWeight: "700" } },
+        title,
+      ),
+      React.createElement(
+        RN.Text,
+        {
+          style: {
+            color: "#B5BAC1",
+            fontSize: 12,
+            marginTop: 3,
+            marginBottom: 12,
+          },
         },
-      }, description),
+        description,
+      ),
       React.createElement(
         RN.View,
         { style: { flexDirection: "row", alignItems: "center" } },
@@ -669,9 +507,11 @@
         React.createElement(
           RN.View,
           { style: { flex: 1 } },
-          React.createElement(RN.Text, {
-            style: { color: "#F2F3F5", fontSize: 15, fontWeight: "600" },
-          }, hex),
+          React.createElement(
+            RN.Text,
+            { style: { color: "#F2F3F5", fontSize: 15, fontWeight: "600" } },
+            hex,
+          ),
           React.createElement(
             RN.Pressable,
             {
@@ -685,9 +525,11 @@
                 backgroundColor: "#4E5058",
               },
             },
-            React.createElement(RN.Text, {
-              style: { color: "#FFFFFF", fontSize: 13, fontWeight: "600" },
-            }, "Open color picker"),
+            React.createElement(
+              RN.Text,
+              { style: { color: "#FFFFFF", fontSize: 13, fontWeight: "600" } },
+              "Open color picker",
+            ),
           ),
         ),
       ),
@@ -704,12 +546,16 @@
         React.createElement(
           RN.View,
           null,
-          React.createElement(RN.Text, {
-            style: { color: "#F2F3F5", fontSize: 14, fontWeight: "600" },
-          }, "Alpha"),
-          React.createElement(RN.Text, {
-            style: { color: "#B5BAC1", fontSize: 12, marginTop: 2 },
-          }, "0 = transparent, 255 = opaque"),
+          React.createElement(
+            RN.Text,
+            { style: { color: "#F2F3F5", fontSize: 14, fontWeight: "600" } },
+            "Alpha",
+          ),
+          React.createElement(
+            RN.Text,
+            { style: { color: "#B5BAC1", fontSize: 12, marginTop: 2 } },
+            "0 = transparent, 255 = opaque",
+          ),
         ),
         React.createElement(AlphaInput, { storageKey: alphaKey, forceRender }),
       ),
@@ -731,9 +577,11 @@
             backgroundColor: "#4E5058",
           },
         },
-        React.createElement(RN.Text, {
-          style: { color: "#FFFFFF", fontSize: 13, fontWeight: "600" },
-        }, "Reset color"),
+        React.createElement(
+          RN.Text,
+          { style: { color: "#FFFFFF", fontSize: 13, fontWeight: "600" } },
+          "Reset color",
+        ),
       ),
     );
   }
@@ -752,9 +600,11 @@
         },
       },
       React.createElement(KeyboardGraphic, { enabled, size: 40 }),
-      React.createElement(RN.Text, {
-        style: { color: "#B5BAC1", fontSize: 13, marginTop: 8 },
-      }, label),
+      React.createElement(
+        RN.Text,
+        { style: { color: "#B5BAC1", fontSize: 13, marginTop: 8 } },
+        label,
+      ),
     );
   }
 
@@ -764,17 +614,23 @@
     return React.createElement(
       RN.ScrollView,
       { contentContainerStyle: { padding: 16, paddingBottom: 32 } },
-      React.createElement(RN.Text, {
-        style: {
-          color: "#F2F3F5",
-          fontSize: 20,
-          fontWeight: "700",
-          marginBottom: 4,
+      React.createElement(
+        RN.Text,
+        {
+          style: {
+            color: "#F2F3F5",
+            fontSize: 20,
+            fontWeight: "700",
+            marginBottom: 4,
+          },
         },
-      }, "Silent Typing"),
-      React.createElement(RN.Text, {
-        style: { color: "#B5BAC1", fontSize: 13, marginBottom: 12 },
-      }, "Plain keyboard means visible. Silent mode can use its own keyboard color and an optional slash."),
+        "Silent Typing",
+      ),
+      React.createElement(
+        RN.Text,
+        { style: { color: "#B5BAC1", fontSize: 13, marginBottom: 12 } },
+        "Plain keyboard means visible. Silent mode can use its own keyboard color and an optional slash.",
+      ),
       React.createElement(
         RN.View,
         {
@@ -798,7 +654,6 @@
             storage.showButton = value;
             forceRender();
             notifyRefresh();
-            refreshComposerSoon();
           },
         }),
       }),
@@ -834,7 +689,6 @@
             storage.buttonSide = value ? "right" : "left";
             forceRender();
             notifyRefresh();
-            refreshComposerSoon();
           },
         }),
       }),
@@ -881,7 +735,6 @@
             storage.buttonSide = "left";
             forceRender();
             notifyRefresh();
-            refreshComposerSoon();
           },
           style: {
             marginTop: 22,
@@ -892,29 +745,16 @@
             backgroundColor: "#4E5058",
           },
         },
-        React.createElement(RN.Text, {
-          style: { color: "#FFFFFF", fontSize: 15, fontWeight: "700" },
-        }, "Reset all appearance settings"),
+        React.createElement(
+          RN.Text,
+          { style: { color: "#FFFFFF", fontSize: 15, fontWeight: "700" } },
+          "Reset all appearance settings",
+        ),
       ),
     );
   }
 
   function cleanup() {
-    try {
-      if (runtime.refreshFrame != null && typeof cancelAnimationFrame === "function") {
-        cancelAnimationFrame(runtime.refreshFrame);
-      }
-    } catch {}
-    if (runtime.refreshTimer != null) {
-      try {
-        clearTimeout(runtime.refreshTimer);
-      } catch {}
-    }
-
-    runtime.refreshFrame = null;
-    runtime.refreshTimer = null;
-    runtime.liveChatInput = null;
-
     while (runtime.patches.length) {
       try {
         runtime.patches.pop()?.();
@@ -922,7 +762,6 @@
     }
 
     runtime.refreshListeners.clear();
-    runtime.guardPatched = false;
     runtime.leftPatched = false;
     runtime.rightPatched = false;
     runtime.typingPatched = false;
