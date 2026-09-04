@@ -3,7 +3,11 @@
 
   const { after, instead } = vendetta.patcher;
   const { find, findByName, findByProps } = vendetta.metro;
-  const { React, ReactNative: RN } = vendetta.metro.common;
+  const {
+    React,
+    ReactNative: RN,
+    NavigationNative,
+  } = vendetta.metro.common;
   const { getAssetIDByName } = vendetta.ui.assets;
   const { storage } = vendetta.plugin;
 
@@ -15,6 +19,7 @@
   const DEFAULT_SLASH_COLOR = "#F23F42";
   const DEFAULT_ALPHA = 255;
   const CONFIG_VERSION = 2;
+  const SETTINGS_HOLD_MS = 1500;
 
   const Typing =
     findByProps("startTyping", "stopTyping")
@@ -24,14 +29,13 @@
     vendetta.ui?.toasts
     ?? findByProps("showToast");
 
-  const ActionSheet =
-    findByProps("openLazy", "hideActionSheet");
+  const ActionSheet = findByProps("openLazy", "hideActionSheet");
 
   const CustomColorPickerActionSheet =
     findByName("CustomColorPickerActionSheet", false)
     ?? findByName("CustomColorPickerActionSheet");
 
-  function clampByte(value, fallback = 255) {
+  function clampByte(value, fallback = DEFAULT_ALPHA) {
     const parsed = Number.parseInt(value, 10);
     if (!Number.isFinite(parsed)) return fallback;
     return Math.max(0, Math.min(255, parsed));
@@ -44,12 +48,9 @@
     if (/^[0-9a-fA-F]{3}$/.test(hex)) {
       hex = hex.split("").map(char => char + char).join("");
     }
-
-    if (/^[0-9a-fA-F]{8}$/.test(hex)) {
-      hex = hex.slice(0, 6);
-    }
-
+    if (/^[0-9a-fA-F]{8}$/.test(hex)) hex = hex.slice(0, 6);
     if (!/^[0-9a-fA-F]{6}$/.test(hex)) return fallback;
+
     return `#${hex.toUpperCase()}`;
   }
 
@@ -58,7 +59,7 @@
     const r = Number.parseInt(normalized.slice(1, 3), 16);
     const g = Number.parseInt(normalized.slice(3, 5), 16);
     const b = Number.parseInt(normalized.slice(5, 7), 16);
-    const a = clampByte(alpha, DEFAULT_ALPHA) / 255;
+    const a = clampByte(alpha) / 255;
     return `rgba(${r}, ${g}, ${b}, ${a})`;
   }
 
@@ -75,9 +76,7 @@
 
     React.useEffect(() => {
       refreshListeners.add(forceRender);
-      return () => {
-        refreshListeners.delete(forceRender);
-      };
+      return () => refreshListeners.delete(forceRender);
     }, []);
 
     return forceRender;
@@ -93,8 +92,16 @@
     try {
       Toasts?.showToast?.(
         text,
-        getAssetIDByName("KeyboardIcon")
-          ?? getAssetIDByName("ChatIcon"),
+        getAssetIDByName("KeyboardIcon") ?? getAssetIDByName("ChatIcon"),
+      );
+    } catch {}
+  }
+
+  function showInfoToast(text) {
+    try {
+      Toasts?.showToast?.(
+        text,
+        getAssetIDByName("SettingsIcon") ?? getAssetIDByName("KeyboardIcon"),
       );
     } catch {}
   }
@@ -126,9 +133,7 @@
 
   function findRenderedComponent(name) {
     try {
-      const byDisplayName = find(
-        module => module?.type?.displayName === name,
-      );
+      const byDisplayName = find(module => module?.type?.displayName === name);
       if (byDisplayName) return byDisplayName;
     } catch {}
 
@@ -204,6 +209,9 @@
   function SilentTypingButton() {
     usePluginRefresh();
 
+    const navigation = NavigationNative?.useNavigation?.();
+    const longPressTriggered = React.useRef(false);
+
     if (storage.showButton === false) return null;
 
     const enabled = storage.enabled === true;
@@ -215,7 +223,29 @@
         accessibilityLabel: enabled
           ? "Silent typing enabled. Tap to disable."
           : "Silent typing disabled. Tap to enable.",
+        accessibilityHint:
+          "Tap to toggle silent typing. Hold to open Silent Typing settings.",
+        delayLongPress: SETTINGS_HOLD_MS,
+        onPressIn: () => {
+          longPressTriggered.current = false;
+        },
+        onLongPress: () => {
+          longPressTriggered.current = true;
+
+          try {
+            navigation?.push?.("VendettaCustomPage", {
+              render: Settings,
+            });
+          } catch {
+            showInfoToast("Open Silent Typing settings from Revenge → Plugins");
+          }
+        },
         onPress: () => {
+          if (longPressTriggered.current) {
+            longPressTriggered.current = false;
+            return;
+          }
+
           const nextEnabled = !enabled;
           storage.enabled = nextEnabled;
           notifyRefresh();
@@ -359,11 +389,11 @@
   }
 
   function AlphaInput({ storageKey, forceRender }) {
-    const initial = String(clampByte(storage[storageKey], DEFAULT_ALPHA));
+    const initial = String(clampByte(storage[storageKey]));
     const [text, setText] = React.useState(initial);
 
     React.useEffect(() => {
-      setText(String(clampByte(storage[storageKey], DEFAULT_ALPHA)));
+      setText(String(clampByte(storage[storageKey])));
     }, [storage[storageKey]]);
 
     return React.createElement(RN.TextInput, {
@@ -376,13 +406,13 @@
         setText(cleaned);
 
         if (cleaned.length > 0) {
-          storage[storageKey] = clampByte(cleaned, DEFAULT_ALPHA);
+          storage[storageKey] = clampByte(cleaned);
           forceRender();
           notifyRefresh();
         }
       },
       onBlur: () => {
-        const normalized = clampByte(text, DEFAULT_ALPHA);
+        const normalized = clampByte(text);
         storage[storageKey] = normalized;
         setText(String(normalized));
         forceRender();
@@ -411,12 +441,12 @@
     forceRender,
   }) {
     const hex = normalizeHex(storage[storageKey], fallback);
-    const alpha = clampByte(storage[alphaKey], DEFAULT_ALPHA);
+    const alpha = clampByte(storage[alphaKey]);
     const displayColor = colorWithAlpha(hex, alpha);
 
     const selectColor = () => {
       if (!openColorPicker(storageKey, fallback)) {
-        Toasts?.showToast?.("Color picker unavailable on this Discord build");
+        showInfoToast("Color picker unavailable on this Discord build");
       }
       forceRender();
     };
@@ -502,11 +532,7 @@
         ),
         React.createElement(
           RN.View,
-          {
-            style: {
-              flex: 1,
-            },
-          },
+          { style: { flex: 1 } },
           React.createElement(
             RN.Text,
             {
@@ -676,10 +702,21 @@
           style: {
             color: "#B5BAC1",
             fontSize: 13,
-            marginBottom: 12,
+            marginBottom: 6,
           },
         },
         "Plain keyboard means visible. Silent mode can use its own keyboard color and an optional slash.",
+      ),
+      React.createElement(
+        RN.Text,
+        {
+          style: {
+            color: "#80848E",
+            fontSize: 12,
+            marginBottom: 12,
+          },
+        },
+        "Tip: hold the composer keyboard button for 1.5 seconds to open this page.",
       ),
       React.createElement(
         RN.View,
@@ -726,7 +763,7 @@
       }),
       React.createElement(SettingRow, {
         title: "Show slash when silent",
-        description: "ON = slash while invisible. OFF = active/inactive keyboard colors are the only visual difference.",
+        description: "ON = slash while invisible. OFF = active/inactive keyboard colors are the visual difference.",
         control: React.createElement(RN.Switch, {
           value: storage.showSlash !== false,
           onValueChange: value => {
@@ -738,7 +775,7 @@
       }),
       React.createElement(SettingRow, {
         title: "Button on right side",
-        description: "OFF places it on the left by default. Reopen the chat after changing sides.",
+        description: "OFF places it on the left. Reopen the chat after changing sides.",
         control: React.createElement(RN.Switch, {
           value: storage.buttonSide === "right",
           onValueChange: value => {
@@ -759,7 +796,7 @@
       }),
       React.createElement(ColorControl, {
         title: "Active / silent keyboard color",
-        description: "Keyboard color while silent typing is ON. This remains useful when the slash is disabled.",
+        description: "Keyboard color while silent typing is ON.",
         storageKey: "silentKeyboardColor",
         alphaKey: "silentKeyboardAlpha",
         fallback: DEFAULT_SILENT_COLOR,
