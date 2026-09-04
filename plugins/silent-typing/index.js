@@ -2,56 +2,130 @@
   "use strict";
 
   const { after, instead } = vendetta.patcher;
-  const { findByName, findByProps } = vendetta.metro;
+  const { find, findByName, findByProps } = vendetta.metro;
   const { React, ReactNative: RN } = vendetta.metro.common;
-  const { findInReactTree } = vendetta.utils;
   const { getAssetIDByName } = vendetta.ui.assets;
+  const semanticColors = vendetta.ui.semanticColors ?? {};
   const { storage } = vendetta.plugin;
 
-  const ChatInputGuardWrapper = findByName("ChatInputGuardWrapper", false);
-  const Typing = findByProps("startTyping", "stopTyping") ?? findByProps("startTyping");
-
   const patches = [];
+
+  const Typing =
+    findByProps("startTyping", "stopTyping")
+    ?? findByProps("startTyping");
+
+  function findChatInputActions() {
+    try {
+      const byDisplayName = find(
+        module => module?.type?.displayName === "ChatInputActions",
+      );
+      if (byDisplayName) return byDisplayName;
+    } catch {}
+
+    try {
+      return (
+        findByName("ChatInputActions", false)
+        ?? findByName("ChatInputActions")
+      );
+    } catch {
+      return null;
+    }
+  }
 
   function SilentTypingButton() {
     const [, forceRender] = React.useReducer(value => value + 1, 0);
     const enabled = storage.enabled === true;
 
-    const icon =
-      getAssetIDByName(enabled ? "ChatXIcon" : "ChatIcon")
-      ?? getAssetIDByName("ChatIcon");
+    const keyboardIcon =
+      getAssetIDByName("KeyboardIcon")
+      ?? getAssetIDByName("ChatIcon")
+      ?? getAssetIDByName("PencilIcon");
 
     return React.createElement(
       RN.Pressable,
       {
         accessibilityRole: "button",
         accessibilityLabel: enabled
-          ? "Disable silent typing"
-          : "Enable silent typing",
+          ? "Silent typing enabled. Tap to disable."
+          : "Silent typing disabled. Tap to enable.",
         onPress: () => {
           storage.enabled = !enabled;
           forceRender();
         },
+        hitSlop: { top: 8, bottom: 8, left: 8, right: 8 },
         style: {
           width: 40,
           height: 40,
           marginHorizontal: 4,
-          marginLeft: 8,
-          marginTop: -4,
           flexShrink: 0,
           alignItems: "center",
           justifyContent: "center",
-          borderRadius: 20,
-          opacity: enabled ? 1 : 0.55,
         },
       },
-      React.createElement(RN.Image, {
-        source: icon,
-        style: {
-          width: 24,
-          height: 24,
+      React.createElement(
+        RN.View,
+        {
+          pointerEvents: "none",
+          style: {
+            width: 28,
+            height: 28,
+            alignItems: "center",
+            justifyContent: "center",
+          },
         },
-      }),
+        React.createElement(RN.Image, {
+          source: keyboardIcon,
+          resizeMode: "contain",
+          style: {
+            width: 24,
+            height: 24,
+            tintColor: semanticColors.INTERACTIVE_ICON_DEFAULT,
+            opacity: enabled ? 1 : 0.72,
+          },
+        }),
+        enabled
+          ? React.createElement(RN.View, {
+              style: {
+                position: "absolute",
+                width: 3,
+                height: 30,
+                borderRadius: 2,
+                backgroundColor:
+                  semanticColors.TEXT_DANGER
+                  ?? semanticColors.TEXT_FEEDBACK_CRITICAL
+                  ?? "#f23f42",
+                transform: [{ rotate: "45deg" }],
+              },
+            })
+          : null,
+      ),
+    );
+  }
+
+  function patchComposer() {
+    const component = findChatInputActions();
+    const target = component?.type ?? component;
+
+    if (!target || typeof target.render !== "function") {
+      throw new Error("Discord ChatInputActions component was not found");
+    }
+
+    patches.push(
+      after("render", target, (_, result) =>
+        React.createElement(
+          RN.View,
+          {
+            style: {
+              flexDirection: "row",
+              alignItems: "center",
+            },
+          },
+          result,
+          React.createElement(SilentTypingButton, {
+            key: "silent-typing-toggle",
+          }),
+        ),
+      ),
     );
   }
 
@@ -68,49 +142,14 @@
     );
   }
 
-  function patchComposer() {
-    if (!ChatInputGuardWrapper?.default) {
-      throw new Error("Discord chat input module was not found");
-    }
-
-    patches.push(
-      after("default", ChatInputGuardWrapper, (_, result) => {
-        const root = result?.props?.children;
-        if (!root) return;
-
-        const inputProps = findInReactTree(
-          root,
-          node => node?.props?.chatInputRef?.current,
-        )?.props?.chatInputRef?.current;
-
-        if (!inputProps?.handleTextChanged) return;
-
-        const container = findInReactTree(
-          root,
-          node =>
-            node?.type?.displayName === "View"
-            && Array.isArray(node?.props?.children),
-        );
-
-        const children = container?.props?.children;
-        if (!Array.isArray(children)) return;
-
-        if (children.some(child => child?.key === "silent-typing-toggle")) return;
-
-        children.unshift(
-          React.createElement(SilentTypingButton, {
-            key: "silent-typing-toggle",
-          }),
-        );
-      }),
-    );
-  }
-
   return {
     onLoad() {
       storage.enabled ??= false;
-      patchTyping();
+
+      // Install the button first. If Discord changes the composer again,
+      // fail the plugin rather than silently leaving typing suppressed.
       patchComposer();
+      patchTyping();
     },
 
     onUnload() {
