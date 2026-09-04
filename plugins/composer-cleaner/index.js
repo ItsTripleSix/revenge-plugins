@@ -2,22 +2,12 @@
   "use strict";
 
   const { before, after } = vendetta.patcher;
-  const { find, findByName } = vendetta.metro;
+  const { find, findByName, findByProps, findByStoreName } = vendetta.metro;
   const { React, ReactNative: RN } = vendetta.metro.common;
-  const { getAssetIDByName } = vendetta.ui.assets;
   const { storage } = vendetta.plugin;
 
   const patches = [];
-
-  const Toasts =
-    vendetta.ui?.toasts
-    ?? (() => {
-      try {
-        return vendetta.metro.findByProps("showToast");
-      } catch {
-        return null;
-      }
-    })();
+  const timers = [];
 
   const DEFAULTS = {
     hideAttachment: false,
@@ -34,15 +24,12 @@
     }
   }
 
-  function showToast(message) {
+  function getStore(name) {
     try {
-      Toasts?.showToast?.(
-        message,
-        getAssetIDByName("TuneIcon")
-          ?? getAssetIDByName("SettingsIcon")
-          ?? getAssetIDByName("ChatIcon"),
-      );
-    } catch {}
+      return findByStoreName?.(name) ?? null;
+    } catch {
+      return null;
+    }
   }
 
   function findRenderedComponent(name) {
@@ -80,7 +67,7 @@
     const type = element.type;
     const icon = props.IconComponent ?? props.iconComponent ?? props.Icon;
 
-    const parts = [
+    return [
       props.accessibilityLabel,
       props.accessibilityHint,
       props.label,
@@ -91,9 +78,7 @@
       typeof type === "function" ? type.name : null,
       icon?.displayName,
       icon?.name,
-    ];
-
-    return parts
+    ]
       .filter(value => typeof value === "string" && value.length)
       .join(" ")
       .toLowerCase();
@@ -101,7 +86,6 @@
 
   function matchesNativeControl(element) {
     const description = describeElement(element);
-
     if (!description) return false;
 
     if (
@@ -111,9 +95,7 @@
         || description.includes("mediakeyboardbuttonicon")
         || description.includes("attachmenticon")
       )
-    ) {
-      return true;
-    }
+    ) return true;
 
     if (
       storage.hideGift === true
@@ -122,9 +104,7 @@
         || description.includes("chatinputactionbuttongift")
         || description.includes("gifticon")
       )
-    ) {
-      return true;
-    }
+    ) return true;
 
     if (
       storage.hideEmoji === true
@@ -133,9 +113,7 @@
         || description.includes("expressionpicker")
         || description.includes("smiley")
       )
-    ) {
-      return true;
-    }
+    ) return true;
 
     if (
       storage.hideMicrophone === true
@@ -143,9 +121,7 @@
         /\bvoice message\b|\bmicrophone\b|\brecord voice\b/.test(description)
         || description.includes("microphoneicon")
       )
-    ) {
-      return true;
-    }
+    ) return true;
 
     if (
       storage.hideApps === true
@@ -154,9 +130,7 @@
         || description.includes("chatinputactionbuttonapps")
         || description.includes("appsicon")
       )
-    ) {
-      return true;
-    }
+    ) return true;
 
     if (
       storage.hideThread === true
@@ -164,9 +138,7 @@
         /\bnew thread\b|\bstart thread\b|\bthread\b/.test(description)
         || description.includes("threadplusicon")
       )
-    ) {
-      return true;
-    }
+    ) return true;
 
     return false;
   }
@@ -180,7 +152,6 @@
 
     if (!React.isValidElement(node)) return node;
 
-    // Only remove elements we can positively identify as Discord native controls.
     // Unknown/custom composer buttons are preserved for compatibility with other plugins.
     if (matchesNativeControl(node)) return null;
 
@@ -261,6 +232,92 @@
     return true;
   }
 
+  function refreshComposerFromDraft() {
+    let draftActions = null;
+    let draftTypes = null;
+
+    try {
+      draftActions = findByProps?.("saveDraft", "changeDraft", "clearDraft") ?? null;
+    } catch {}
+
+    try {
+      draftTypes = findByProps?.(
+        "ChannelMessage",
+        "ThreadSettings",
+        "FirstThreadMessage",
+      ) ?? null;
+    } catch {}
+
+    const draftStore = getStore("DraftStore");
+    const selectedChannelStore = getStore("SelectedChannelStore");
+    const selectedGuildStore = getStore("SelectedGuildStore");
+
+    if (!draftActions?.saveDraft || !draftStore?.getDraft || !selectedChannelStore) {
+      return false;
+    }
+
+    let guildId = null;
+    let channelId = null;
+
+    try {
+      guildId = selectedGuildStore?.getGuildId?.() ?? null;
+    } catch {}
+
+    try {
+      channelId = selectedChannelStore.getCurrentlySelectedChannelId?.(guildId) ?? null;
+    } catch {}
+
+    if (!channelId) {
+      try {
+        channelId = selectedChannelStore.getChannelId?.(guildId, false) ?? null;
+      } catch {}
+    }
+
+    if (!channelId) return false;
+
+    const draftType = draftTypes?.ChannelMessage ?? 0;
+    let draft = "";
+
+    try {
+      draft = draftStore.getDraft(channelId, draftType) ?? "";
+    } catch {
+      return false;
+    }
+
+    try {
+      // Re-save the exact same draft. DRAFT_SAVE notifies the mounted composer
+      // without inserting text, navigating, or invoking Discord's typing action.
+      draftActions.saveDraft(channelId, draft, draftType);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function scheduleStartupRefresh() {
+    const delays = [250, 700, 1400, 2800];
+
+    for (const delay of delays) {
+      timers.push(
+        setTimeout(() => {
+          refreshComposerFromDraft();
+        }, delay),
+      );
+    }
+  }
+
+  function refreshComposerSoon() {
+    timers.push(setTimeout(refreshComposerFromDraft, 0));
+  }
+
+  function clearTimers() {
+    while (timers.length) {
+      try {
+        clearTimeout(timers.pop());
+      } catch {}
+    }
+  }
+
   function SettingRow({ title, description, storageKey, forceRender }) {
     return React.createElement(
       RN.View,
@@ -298,6 +355,7 @@
           onValueChange: value => {
             storage[storageKey] = value;
             forceRender();
+            refreshComposerSoon();
           },
         }),
       ),
@@ -351,6 +409,7 @@
     const setAll = value => {
       for (const key of Object.keys(DEFAULTS)) storage[key] = value;
       forceRender();
+      refreshComposerSoon();
     };
 
     return React.createElement(
@@ -452,7 +511,7 @@
             marginTop: 14,
           },
         },
-        "Changes apply on the next composer render. If a button does not update immediately, leave and reopen the chat.",
+        "Changes apply automatically. Composer Cleaner refreshes the current draft without sending a typing event or changing channels.",
       ),
     );
   }
@@ -470,9 +529,13 @@
       if (!results.some(Boolean)) {
         throw new Error("Discord composer components were not found");
       }
+
+      scheduleStartupRefresh();
     },
 
     onUnload() {
+      clearTimers();
+
       while (patches.length) {
         try {
           patches.pop()?.();
