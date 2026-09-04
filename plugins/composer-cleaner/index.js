@@ -2,12 +2,20 @@
   "use strict";
 
   const { before, after } = vendetta.patcher;
-  const { find, findByName, findByProps, findByStoreName } = vendetta.metro;
+  const { find, findByName } = vendetta.metro;
   const { React, ReactNative: RN } = vendetta.metro.common;
   const { storage } = vendetta.plugin;
 
   const patches = [];
-  const timers = [];
+  const patched = {
+    actions: false,
+    rightActions: false,
+    sendButton: false,
+    guard: false,
+  };
+
+  let liveChatInput = null;
+  let refreshFrame = null;
 
   const DEFAULTS = {
     hideAttachment: false,
@@ -21,14 +29,6 @@
   function ensureDefaults() {
     for (const [key, value] of Object.entries(DEFAULTS)) {
       storage[key] ??= value;
-    }
-  }
-
-  function getStore(name) {
-    try {
-      return findByStoreName?.(name) ?? null;
-    } catch {
-      return null;
     }
   }
 
@@ -47,14 +47,15 @@
 
   function getRenderTarget(name) {
     const component = findRenderedComponent(name);
+
+    if (component && typeof component.default === "function") {
+      return { target: component, method: "default" };
+    }
+
     const target = component?.type ?? component;
 
     if (target && typeof target.render === "function") {
       return { target, method: "render" };
-    }
-
-    if (component && typeof component.default === "function") {
-      return { target: component, method: "default" };
     }
 
     return null;
@@ -152,7 +153,6 @@
 
     if (!React.isValidElement(node)) return node;
 
-    // Unknown/custom composer buttons are preserved for compatibility with other plugins.
     if (matchesNativeControl(node)) return null;
 
     const children = node.props?.children;
@@ -169,6 +169,8 @@
   }
 
   function patchChatInputActions() {
+    if (patched.actions) return true;
+
     const found = getRenderTarget("ChatInputActions");
     if (!found) return false;
 
@@ -188,10 +190,13 @@
       after(found.method, found.target, (_, result) => cleanNativeTree(result)),
     );
 
+    patched.actions = true;
     return true;
   }
 
   function patchRightActions() {
+    if (patched.rightActions) return true;
+
     const found = getRenderTarget("ChatInputRightActions");
     if (!found) return false;
 
@@ -207,10 +212,13 @@
       after(found.method, found.target, (_, result) => cleanNativeTree(result)),
     );
 
+    patched.rightActions = true;
     return true;
   }
 
   function patchSendButton() {
+    if (patched.sendButton) return true;
+
     const found = getRenderTarget("ChatInputSendButton");
     if (!found) return false;
 
@@ -229,93 +237,125 @@
       after(found.method, found.target, (_, result) => cleanNativeTree(result)),
     );
 
+    patched.sendButton = true;
     return true;
   }
 
-  function refreshComposerFromDraft() {
-    let draftActions = null;
-    let draftTypes = null;
+  function findInReactTree(node, predicate, seen = new Set(), depth = 0) {
+    if (node == null || depth > 60) return null;
 
-    try {
-      draftActions = findByProps?.("saveDraft", "changeDraft", "clearDraft") ?? null;
-    } catch {}
-
-    try {
-      draftTypes = findByProps?.(
-        "ChannelMessage",
-        "ThreadSettings",
-        "FirstThreadMessage",
-      ) ?? null;
-    } catch {}
-
-    const draftStore = getStore("DraftStore");
-    const selectedChannelStore = getStore("SelectedChannelStore");
-    const selectedGuildStore = getStore("SelectedGuildStore");
-
-    if (!draftActions?.saveDraft || !draftStore?.getDraft || !selectedChannelStore) {
-      return false;
+    if (Array.isArray(node)) {
+      for (const child of node) {
+        const found = findInReactTree(child, predicate, seen, depth + 1);
+        if (found) return found;
+      }
+      return null;
     }
 
-    let guildId = null;
-    let channelId = null;
+    if (typeof node !== "object") return null;
+    if (seen.has(node)) return null;
+    seen.add(node);
 
     try {
-      guildId = selectedGuildStore?.getGuildId?.() ?? null;
+      if (predicate(node)) return node;
     } catch {}
 
-    try {
-      channelId = selectedChannelStore.getCurrentlySelectedChannelId?.(guildId) ?? null;
-    } catch {}
-
-    if (!channelId) {
-      try {
-        channelId = selectedChannelStore.getChannelId?.(guildId, false) ?? null;
-      } catch {}
+    const children = node.props?.children;
+    if (children !== undefined) {
+      const found = findInReactTree(children, predicate, seen, depth + 1);
+      if (found) return found;
     }
 
-    if (!channelId) return false;
+    return null;
+  }
 
-    const draftType = draftTypes?.ChannelMessage ?? 0;
-    let draft = "";
-
-    try {
-      draft = draftStore.getDraft(channelId, draftType) ?? "";
-    } catch {
-      return false;
-    }
+  function refreshLiveComposer(ref = liveChatInput) {
+    if (!ref) return false;
 
     try {
-      // Re-save the exact same draft. DRAFT_SAVE notifies the mounted composer
-      // without inserting text, navigating, or invoking Discord's typing action.
-      draftActions.saveDraft(channelId, draft, draftType);
-      return true;
+      ref.showSideActions?.();
+      return typeof ref.showSideActions === "function";
     } catch {
       return false;
     }
   }
 
-  function scheduleStartupRefresh() {
-    const delays = [250, 700, 1400, 2800];
+  function scheduleLiveRefresh(ref) {
+    if (!ref) return;
 
-    for (const delay of delays) {
-      timers.push(
-        setTimeout(() => {
-          refreshComposerFromDraft();
-        }, delay),
-      );
+    liveChatInput = ref;
+
+    try {
+      if (refreshFrame != null && typeof cancelAnimationFrame === "function") {
+        cancelAnimationFrame(refreshFrame);
+      }
+
+      if (typeof requestAnimationFrame === "function") {
+        refreshFrame = requestAnimationFrame(() => {
+          refreshFrame = null;
+          refreshLiveComposer(ref);
+        });
+        return;
+      }
+    } catch {}
+
+    setTimeout(() => refreshLiveComposer(ref), 0);
+  }
+
+  function patchChatInputGuard() {
+    if (patched.guard) return true;
+
+    let wrapper = null;
+    try {
+      wrapper = findByName("ChatInputGuardWrapper", false) ?? findByName("ChatInputGuardWrapper");
+    } catch {}
+
+    if (!wrapper) return false;
+
+    let target = null;
+    let method = null;
+
+    if (typeof wrapper.default === "function") {
+      target = wrapper;
+      method = "default";
+    } else if (wrapper?.type && typeof wrapper.type.render === "function") {
+      target = wrapper.type;
+      method = "render";
     }
+
+    if (!target || !method) return false;
+
+    patches.push(
+      after(method, target, (_, result) => {
+        const node = findInReactTree(
+          result,
+          value => value?.props?.chatInputRef?.current,
+        );
+
+        const ref = node?.props?.chatInputRef?.current;
+        if (ref) scheduleLiveRefresh(ref);
+
+        return result;
+      }),
+    );
+
+    patched.guard = true;
+    return true;
+  }
+
+  function installPatches() {
+    ensureDefaults();
+
+    return [
+      patchChatInputActions(),
+      patchRightActions(),
+      patchSendButton(),
+      patchChatInputGuard(),
+    ];
   }
 
   function refreshComposerSoon() {
-    timers.push(setTimeout(refreshComposerFromDraft, 0));
-  }
-
-  function clearTimers() {
-    while (timers.length) {
-      try {
-        clearTimeout(timers.pop());
-      } catch {}
-    }
+    setTimeout(() => refreshLiveComposer(), 0);
   }
 
   function SettingRow({ title, description, storageKey, forceRender }) {
@@ -511,36 +551,41 @@
             marginTop: 14,
           },
         },
-        "Changes apply automatically. Composer Cleaner refreshes the current draft without sending a typing event or changing channels.",
+        "Changes apply automatically without typing or switching channels.",
       ),
     );
   }
 
+  const earlyResults = installPatches();
+
   return {
     onLoad() {
-      ensureDefaults();
+      const results = installPatches();
 
-      const results = [
-        patchChatInputActions(),
-        patchRightActions(),
-        patchSendButton(),
-      ];
-
-      if (!results.some(Boolean)) {
+      if (![...earlyResults, ...results].some(Boolean)) {
         throw new Error("Discord composer components were not found");
       }
 
-      scheduleStartupRefresh();
+      refreshComposerSoon();
     },
 
     onUnload() {
-      clearTimers();
+      try {
+        if (refreshFrame != null && typeof cancelAnimationFrame === "function") {
+          cancelAnimationFrame(refreshFrame);
+        }
+      } catch {}
+
+      refreshFrame = null;
+      liveChatInput = null;
 
       while (patches.length) {
         try {
           patches.pop()?.();
         } catch {}
       }
+
+      for (const key of Object.keys(patched)) patched[key] = false;
     },
 
     settings: Settings,
