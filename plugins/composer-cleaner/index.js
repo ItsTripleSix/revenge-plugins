@@ -2,17 +2,12 @@
   "use strict";
 
   const { before, after } = vendetta.patcher;
-  const {
-    find,
-    findByName,
-    findByProps,
-    findByStoreName,
-  } = vendetta.metro;
+  const { find, findByName, findByProps, findByStoreName } = vendetta.metro;
   const { React, ReactNative: RN } = vendetta.metro.common;
   const { storage } = vendetta.plugin;
 
   const patches = [];
-  const refreshTimers = [];
+  const timers = [];
 
   const DEFAULTS = {
     hideAttachment: false,
@@ -37,22 +32,6 @@
     }
   }
 
-  function getChannelActions() {
-    try {
-      return (
-        findByProps(
-          "selectChannel",
-          "selectPrivateChannel",
-          "selectVoiceChannel",
-        )
-        ?? findByProps("selectChannel", "selectPrivateChannel")
-        ?? null
-      );
-    } catch {
-      return null;
-    }
-  }
-
   function getCurrentSelection() {
     const selectedChannelStore = getStore("SelectedChannelStore");
     const selectedGuildStore = getStore("SelectedGuildStore");
@@ -67,9 +46,7 @@
     } catch {}
 
     try {
-      channelId =
-        selectedChannelStore.getCurrentlySelectedChannelId?.(guildId)
-        ?? null;
+      channelId = selectedChannelStore.getCurrentlySelectedChannelId?.(guildId) ?? null;
     } catch {}
 
     if (!channelId) {
@@ -85,57 +62,65 @@
     return { guildId, channelId };
   }
 
-  function hardRemountCurrentComposer() {
-    const actions = getChannelActions();
+  function refreshGuildComposerRoute() {
     const selection = getCurrentSelection();
-
-    if (!actions?.selectChannel || !selection) return false;
+    if (!selection) return false;
 
     const { guildId, channelId } = selection;
+    if (!guildId) return true;
+
+    let routing = null;
+    try {
+      routing = findByProps("transitionToGuild");
+    } catch {}
+
+    const guildChannelStore = getStore("GuildChannelStore");
+    if (!routing?.transitionToGuild || !guildChannelStore) return false;
+
+    let channelIds = [];
+    try {
+      channelIds = guildChannelStore.getSelectableChannelIds?.(guildId) ?? [];
+    } catch {}
+
+    const alternateChannelId = channelIds.find(
+      id => id && id !== channelId,
+    );
+
+    if (!alternateChannelId) return false;
 
     try {
-      actions.selectChannel({
-        guildId: null,
-        channelId: null,
-        skipMessageFetch: true,
-        opensChannel: false,
-      });
+      routing.transitionToGuild(guildId, alternateChannelId);
     } catch {
       return false;
     }
 
-    refreshTimers.push(
+    timers.push(
       setTimeout(() => {
         try {
-          actions.selectChannel({
-            guildId,
-            channelId,
-            skipMessageFetch: true,
-            opensChannel: false,
-          });
+          routing.transitionToGuild(guildId, channelId);
         } catch {}
-      }, 60),
+      }, 120),
     );
 
     return true;
   }
 
-  function clearRefreshes() {
-    while (refreshTimers.length) {
+  function clearTimers() {
+    while (timers.length) {
       try {
-        clearTimeout(refreshTimers.pop());
+        clearTimeout(timers.pop());
       } catch {}
     }
   }
 
-  function scheduleStartupRemount(attempt = 0) {
-    const delays = [300, 750, 1500, 3000, 5000];
+  function scheduleStartupRefresh(attempt = 0) {
+    const delays = [600, 1200, 2500, 5000];
     if (attempt >= delays.length) return;
 
-    refreshTimers.push(
+    timers.push(
       setTimeout(() => {
-        if (!hardRemountCurrentComposer()) {
-          scheduleStartupRemount(attempt + 1);
+        if (!refreshGuildComposerRoute()) {
+          scheduleStartupRefresh(attempt + 1);
         }
       }, delays[attempt]),
     );
@@ -204,9 +189,7 @@
         || description.includes("mediakeyboardbuttonicon")
         || description.includes("attachmenticon")
       )
-    ) {
-      return true;
-    }
+    ) return true;
 
     if (
       storage.hideGift === true
@@ -215,9 +198,7 @@
         || description.includes("chatinputactionbuttongift")
         || description.includes("gifticon")
       )
-    ) {
-      return true;
-    }
+    ) return true;
 
     if (
       storage.hideEmoji === true
@@ -226,9 +207,7 @@
         || description.includes("expressionpicker")
         || description.includes("smiley")
       )
-    ) {
-      return true;
-    }
+    ) return true;
 
     if (
       storage.hideMicrophone === true
@@ -236,9 +215,7 @@
         /\bvoice message\b|\bmicrophone\b|\brecord voice\b/.test(description)
         || description.includes("microphoneicon")
       )
-    ) {
-      return true;
-    }
+    ) return true;
 
     if (
       storage.hideApps === true
@@ -247,9 +224,7 @@
         || description.includes("chatinputactionbuttonapps")
         || description.includes("appsicon")
       )
-    ) {
-      return true;
-    }
+    ) return true;
 
     if (
       storage.hideThread === true
@@ -257,9 +232,7 @@
         /\bnew thread\b|\bstart thread\b|\bthread\b/.test(description)
         || description.includes("threadplusicon")
       )
-    ) {
-      return true;
-    }
+    ) return true;
 
     return false;
   }
@@ -268,16 +241,10 @@
     if (Array.isArray(node)) {
       return node
         .map(cleanNativeTree)
-        .filter(child => (
-          child !== null
-          && child !== undefined
-          && child !== false
-        ));
+        .filter(child => child !== null && child !== undefined && child !== false);
     }
 
     if (!React.isValidElement(node)) return node;
-
-    // Unknown/custom composer buttons are intentionally preserved.
     if (matchesNativeControl(node)) return null;
 
     const children = node.props?.children;
@@ -310,11 +277,7 @@
           props.canStartThreads = false;
         }
       }),
-      after(
-        found.method,
-        found.target,
-        (_, result) => cleanNativeTree(result),
-      ),
+      after(found.method, found.target, (_, result) => cleanNativeTree(result)),
     );
 
     return true;
@@ -329,18 +292,11 @@
         const props = args?.[0];
         if (!props || typeof props !== "object") return;
 
-        if (
-          storage.hideGift === true
-          && "shouldShowGiftButton" in props
-        ) {
+        if (storage.hideGift === true && "shouldShowGiftButton" in props) {
           props.shouldShowGiftButton = false;
         }
       }),
-      after(
-        found.method,
-        found.target,
-        (_, result) => cleanNativeTree(result),
-      ),
+      after(found.method, found.target, (_, result) => cleanNativeTree(result)),
     );
 
     return true;
@@ -362,22 +318,13 @@
           props.canSendVoiceMessage = false;
         }
       }),
-      after(
-        found.method,
-        found.target,
-        (_, result) => cleanNativeTree(result),
-      ),
+      after(found.method, found.target, (_, result) => cleanNativeTree(result)),
     );
 
     return true;
   }
 
-  function SettingRow({
-    title,
-    description,
-    storageKey,
-    forceRender,
-  }) {
+  function SettingRow({ title, description, storageKey, forceRender }) {
     return React.createElement(
       RN.View,
       {
@@ -574,11 +521,11 @@
         throw new Error("Discord composer components were not found");
       }
 
-      scheduleStartupRemount();
+      scheduleStartupRefresh();
     },
 
     onUnload() {
-      clearRefreshes();
+      clearTimers();
 
       while (patches.length) {
         try {
