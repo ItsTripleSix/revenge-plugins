@@ -97,6 +97,9 @@
   function scheduleComposerRemount() {
     clearRefreshes();
 
+    // Revenge can load after Discord has already mounted the initial composer.
+    // Re-selecting the same channel causes Discord to rebuild that composer
+    // without changing where the user is.
     for (const delay of [300, 1000, 2500, 5000]) {
       refreshTimers.push(
         setTimeout(() => {
@@ -250,6 +253,7 @@
 
     if (!React.isValidElement(node)) return node;
 
+    // Unknown/custom composer buttons are intentionally preserved.
     if (matchesNativeControl(node)) return null;
 
     const children = node.props?.children;
