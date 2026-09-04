@@ -1,22 +1,12 @@
 (() => {
   "use strict";
 
-  const { before, after } = vendetta.patcher;
+  const { after } = vendetta.patcher;
   const { find, findByName } = vendetta.metro;
   const { React, ReactNative: RN } = vendetta.metro.common;
   const { storage } = vendetta.plugin;
 
-  const patches = [];
-  const patched = {
-    actions: false,
-    rightActions: false,
-    sendButton: false,
-    guard: false,
-  };
-
-  let liveChatInput = null;
-  let refreshFrame = null;
-
+  const RUNTIME_KEY = "__itsTripleSixComposerCleanerRuntime";
   const DEFAULTS = {
     hideAttachment: false,
     hideGift: false,
@@ -26,10 +16,82 @@
     hideThread: false,
   };
 
+  const runtime = globalThis[RUNTIME_KEY] ?? {
+    patches: [],
+    refreshListeners: new Set(),
+    patched: {
+      actions: false,
+      rightActions: false,
+      sendButton: false,
+      guard: false,
+    },
+    liveChatInput: null,
+    refreshFrame: null,
+    refreshTimer: null,
+    active: false,
+    initialRefreshPending: true,
+    unpatchAll: null,
+  };
+
+  globalThis[RUNTIME_KEY] = runtime;
+
+  function cancelScheduledRefresh() {
+    try {
+      if (runtime.refreshFrame != null && typeof cancelAnimationFrame === "function") {
+        cancelAnimationFrame(runtime.refreshFrame);
+      }
+    } catch {}
+
+    if (runtime.refreshTimer != null) {
+      try {
+        clearTimeout(runtime.refreshTimer);
+      } catch {}
+    }
+
+    runtime.refreshFrame = null;
+    runtime.refreshTimer = null;
+  }
+
+  function unpatchAll() {
+    cancelScheduledRefresh();
+
+    while (runtime.patches.length) {
+      try {
+        runtime.patches.pop()?.();
+      } catch {}
+    }
+
+    for (const key of Object.keys(runtime.patched)) runtime.patched[key] = false;
+  }
+
+  try {
+    runtime.unpatchAll?.();
+  } catch {}
+  runtime.unpatchAll = unpatchAll;
+  runtime.active = true;
+  runtime.initialRefreshPending = true;
+
   function ensureDefaults() {
     for (const [key, value] of Object.entries(DEFAULTS)) {
       storage[key] ??= value;
     }
+  }
+
+  function notifyRefresh() {
+    for (const listener of runtime.refreshListeners) {
+      try {
+        listener();
+      } catch {}
+    }
+  }
+
+  function useCleanerRefresh() {
+    const [, forceRender] = React.useReducer(value => value + 1, 0);
+
+    React.useEffect(() => {
+      runtime.refreshListeners.add(forceRender);
+      return () => runtime.refreshListeners.delete(forceRender);
+    }, []);
   }
 
   function findRenderedComponent(name) {
@@ -53,7 +115,6 @@
     }
 
     const target = component?.type ?? component;
-
     if (target && typeof target.render === "function") {
       return { target, method: "render" };
     }
@@ -152,7 +213,6 @@
     }
 
     if (!React.isValidElement(node)) return node;
-
     if (matchesNativeControl(node)) return null;
 
     const children = node.props?.children;
@@ -168,76 +228,30 @@
     }
   }
 
-  function patchChatInputActions() {
-    if (patched.actions) return true;
-
-    const found = getRenderTarget("ChatInputActions");
-    if (!found) return false;
-
-    patches.push(
-      before(found.method, found.target, args => {
-        const props = args?.[0];
-        if (!props || typeof props !== "object") return;
-
-        if (storage.hideApps === true && "isAppLauncherEnabled" in props) {
-          props.isAppLauncherEnabled = false;
-        }
-
-        if (storage.hideThread === true && "canStartThreads" in props) {
-          props.canStartThreads = false;
-        }
-      }),
-      after(found.method, found.target, (_, result) => cleanNativeTree(result)),
-    );
-
-    patched.actions = true;
-    return true;
+  function CleanerOutput({ result }) {
+    useCleanerRefresh();
+    if (runtime.active !== true) return result;
+    return cleanNativeTree(result);
   }
 
-  function patchRightActions() {
-    if (patched.rightActions) return true;
-
-    const found = getRenderTarget("ChatInputRightActions");
-    if (!found) return false;
-
-    patches.push(
-      before(found.method, found.target, args => {
-        const props = args?.[0];
-        if (!props || typeof props !== "object") return;
-
-        if (storage.hideGift === true && "shouldShowGiftButton" in props) {
-          props.shouldShowGiftButton = false;
-        }
-      }),
-      after(found.method, found.target, (_, result) => cleanNativeTree(result)),
-    );
-
-    patched.rightActions = true;
-    return true;
+  function wrapCleanResult(result, key) {
+    return React.createElement(CleanerOutput, {
+      key: `composer-cleaner-${key}`,
+      result,
+    });
   }
 
-  function patchSendButton() {
-    if (patched.sendButton) return true;
+  function patchOutput(name, flag) {
+    if (runtime.patched[flag]) return true;
 
-    const found = getRenderTarget("ChatInputSendButton");
+    const found = getRenderTarget(name);
     if (!found) return false;
 
-    patches.push(
-      before(found.method, found.target, args => {
-        const props = args?.[0];
-        if (!props || typeof props !== "object") return;
-
-        if (
-          storage.hideMicrophone === true
-          && "canSendVoiceMessage" in props
-        ) {
-          props.canSendVoiceMessage = false;
-        }
-      }),
-      after(found.method, found.target, (_, result) => cleanNativeTree(result)),
+    runtime.patches.push(
+      after(found.method, found.target, (_, result) => wrapCleanResult(result, flag)),
     );
 
-    patched.sendButton = true;
+    runtime.patched[flag] = true;
     return true;
   }
 
@@ -269,45 +283,61 @@
     return null;
   }
 
-  function refreshLiveComposer(ref = liveChatInput) {
+  function forceComposerActionRerender(ref = runtime.liveChatInput) {
     if (!ref) return false;
 
+    let text = "";
     try {
-      ref.showSideActions?.();
-      return typeof ref.showSideActions === "function";
+      text = String(ref.getText?.() ?? "");
+    } catch {}
+
+    const shouldShowSideActions = text.length === 0;
+    const first = shouldShowSideActions ? "hideSideActions" : "showSideActions";
+    const second = shouldShowSideActions ? "showSideActions" : "hideSideActions";
+
+    if (typeof ref[first] !== "function" || typeof ref[second] !== "function") {
+      return false;
+    }
+
+    cancelScheduledRefresh();
+
+    try {
+      ref[first]();
     } catch {
       return false;
     }
+
+    const finish = () => {
+      runtime.refreshFrame = null;
+      runtime.refreshTimer = null;
+      try {
+        ref[second]();
+      } catch {}
+    };
+
+    if (typeof requestAnimationFrame === "function") {
+      runtime.refreshFrame = requestAnimationFrame(finish);
+    } else {
+      runtime.refreshTimer = setTimeout(finish, 0);
+    }
+
+    return true;
   }
 
-  function scheduleLiveRefresh(ref) {
-    if (!ref) return;
-
-    liveChatInput = ref;
-
-    try {
-      if (refreshFrame != null && typeof cancelAnimationFrame === "function") {
-        cancelAnimationFrame(refreshFrame);
-      }
-
-      if (typeof requestAnimationFrame === "function") {
-        refreshFrame = requestAnimationFrame(() => {
-          refreshFrame = null;
-          refreshLiveComposer(ref);
-        });
-        return;
-      }
-    } catch {}
-
-    setTimeout(() => refreshLiveComposer(ref), 0);
+  function refreshComposerSoon() {
+    setTimeout(() => {
+      notifyRefresh();
+      if (runtime.refreshListeners.size === 0) forceComposerActionRerender();
+    }, 0);
   }
 
   function patchChatInputGuard() {
-    if (patched.guard) return true;
+    if (runtime.patched.guard) return true;
 
     let wrapper = null;
     try {
-      wrapper = findByName("ChatInputGuardWrapper", false) ?? findByName("ChatInputGuardWrapper");
+      wrapper = findByName("ChatInputGuardWrapper", false)
+        ?? findByName("ChatInputGuardWrapper");
     } catch {}
 
     if (!wrapper) return false;
@@ -325,7 +355,7 @@
 
     if (!target || !method) return false;
 
-    patches.push(
+    runtime.patches.push(
       after(method, target, (_, result) => {
         const node = findInReactTree(
           result,
@@ -333,13 +363,19 @@
         );
 
         const ref = node?.props?.chatInputRef?.current;
-        if (ref) scheduleLiveRefresh(ref);
+        if (ref) {
+          runtime.liveChatInput = ref;
+          if (runtime.initialRefreshPending) {
+            runtime.initialRefreshPending = false;
+            setTimeout(() => forceComposerActionRerender(ref), 0);
+          }
+        }
 
         return result;
       }),
     );
 
-    patched.guard = true;
+    runtime.patched.guard = true;
     return true;
   }
 
@@ -347,15 +383,11 @@
     ensureDefaults();
 
     return [
-      patchChatInputActions(),
-      patchRightActions(),
-      patchSendButton(),
+      patchOutput("ChatInputActions", "actions"),
+      patchOutput("ChatInputRightActions", "rightActions"),
+      patchOutput("ChatInputSendButton", "sendButton"),
       patchChatInputGuard(),
     ];
-  }
-
-  function refreshComposerSoon() {
-    setTimeout(() => refreshLiveComposer(), 0);
   }
 
   function SettingRow({ title, description, storageKey, forceRender }) {
@@ -395,7 +427,8 @@
           onValueChange: value => {
             storage[storageKey] = value;
             forceRender();
-            refreshComposerSoon();
+            notifyRefresh();
+            if (runtime.refreshListeners.size === 0) forceComposerActionRerender();
           },
         }),
       ),
@@ -449,7 +482,8 @@
     const setAll = value => {
       for (const key of Object.keys(DEFAULTS)) storage[key] = value;
       forceRender();
-      refreshComposerSoon();
+      notifyRefresh();
+      if (runtime.refreshListeners.size === 0) forceComposerActionRerender();
     };
 
     return React.createElement(
@@ -551,41 +585,36 @@
             marginTop: 14,
           },
         },
-        "Changes apply automatically without typing or switching channels.",
+        "Changes apply immediately without typing or switching channels.",
       ),
     );
   }
 
+  ensureDefaults();
   const earlyResults = installPatches();
 
   return {
     onLoad() {
+      runtime.active = true;
+      runtime.initialRefreshPending = true;
       const results = installPatches();
+
+      notifyRefresh();
 
       if (![...earlyResults, ...results].some(Boolean)) {
         throw new Error("Discord composer components were not found");
       }
 
-      refreshComposerSoon();
+      if (runtime.liveChatInput) {
+        runtime.initialRefreshPending = false;
+        setTimeout(() => forceComposerActionRerender(), 0);
+      }
     },
 
     onUnload() {
-      try {
-        if (refreshFrame != null && typeof cancelAnimationFrame === "function") {
-          cancelAnimationFrame(refreshFrame);
-        }
-      } catch {}
-
-      refreshFrame = null;
-      liveChatInput = null;
-
-      while (patches.length) {
-        try {
-          patches.pop()?.();
-        } catch {}
-      }
-
-      for (const key of Object.keys(patched)) patched[key] = false;
+      runtime.active = false;
+      notifyRefresh();
+      unpatchAll();
     },
 
     settings: Settings,
