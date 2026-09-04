@@ -1,0 +1,14 @@
+{
+  "name": "Silent Typing",
+  "description": "Adds a tap-to-toggle silent typing button to the message composer.",
+  "authors": [
+    {
+      "name": "ItsTripleSix"
+    }
+  ],
+  "main": "index.js",
+  "hash": "5248a8021354eeb0a8a073289dfdbf7efe1687f3cb6ccb7a1af08caaf1a4df9a",
+  "vendetta": {
+    "icon": "ChatXIcon"
+  }
+}
