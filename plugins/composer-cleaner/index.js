@@ -53,37 +53,71 @@
     }
   }
 
-  function reselectCurrentChannel() {
+  function getCurrentSelection() {
     const selectedChannelStore = getStore("SelectedChannelStore");
     const selectedGuildStore = getStore("SelectedGuildStore");
-    const actions = getChannelActions();
 
-    if (!selectedChannelStore || !actions?.selectChannel) return false;
+    if (!selectedChannelStore) return null;
 
-    let channelId = null;
     let guildId = null;
-
-    try {
-      channelId = selectedChannelStore.getChannelId?.() ?? null;
-    } catch {}
-
-    if (!channelId) return false;
+    let channelId = null;
 
     try {
       guildId = selectedGuildStore?.getGuildId?.() ?? null;
     } catch {}
 
     try {
+      channelId =
+        selectedChannelStore.getCurrentlySelectedChannelId?.(guildId)
+        ?? null;
+    } catch {}
+
+    if (!channelId) {
+      try {
+        channelId =
+          selectedChannelStore.getChannelId?.(guildId, false)
+          ?? selectedChannelStore.getChannelId?.()
+          ?? null;
+      } catch {}
+    }
+
+    if (!channelId) return null;
+    return { guildId, channelId };
+  }
+
+  function hardRemountCurrentComposer() {
+    const actions = getChannelActions();
+    const selection = getCurrentSelection();
+
+    if (!actions?.selectChannel || !selection) return false;
+
+    const { guildId, channelId } = selection;
+
+    try {
       actions.selectChannel({
         guildId,
-        channelId,
+        channelId: null,
         skipMessageFetch: true,
         opensChannel: false,
       });
-      return true;
     } catch {
       return false;
     }
+
+    refreshTimers.push(
+      setTimeout(() => {
+        try {
+          actions.selectChannel({
+            guildId,
+            channelId,
+            skipMessageFetch: true,
+            opensChannel: false,
+          });
+        } catch {}
+      }, 60),
+    );
+
+    return true;
   }
 
   function clearRefreshes() {
@@ -94,26 +128,16 @@
     }
   }
 
-  function scheduleComposerRemount() {
-    clearRefreshes();
+  function scheduleStartupRemount(attempt = 0) {
+    const delays = [300, 750, 1500, 3000, 5000];
+    if (attempt >= delays.length) return;
 
-    // Revenge can load after Discord has already mounted the initial composer.
-    // Re-selecting the same channel causes Discord to rebuild that composer
-    // without changing where the user is.
-    for (const delay of [300, 1000, 2500, 5000]) {
-      refreshTimers.push(
-        setTimeout(() => {
-          reselectCurrentChannel();
-        }, delay),
-      );
-    }
-  }
-
-  function applyComposerChange() {
     refreshTimers.push(
       setTimeout(() => {
-        reselectCurrentChannel();
-      }, 0),
+        if (!hardRemountCurrentComposer()) {
+          scheduleStartupRemount(attempt + 1);
+        }
+      }, delays[attempt]),
     );
   }
 
@@ -390,7 +414,6 @@
           onValueChange: value => {
             storage[storageKey] = value;
             forceRender();
-            applyComposerChange();
           },
         }),
       ),
@@ -446,7 +469,6 @@
         storage[key] = value;
       }
       forceRender();
-      applyComposerChange();
     };
 
     return React.createElement(
@@ -552,7 +574,7 @@
         throw new Error("Discord composer components were not found");
       }
 
-      scheduleComposerRemount();
+      scheduleStartupRemount();
     },
 
     onUnload() {
