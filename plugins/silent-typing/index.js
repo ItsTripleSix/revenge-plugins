@@ -15,11 +15,31 @@
     findByProps("startTyping", "stopTyping")
     ?? findByProps("startTyping");
 
+  const Toasts =
+    vendetta.ui?.toasts
+    ?? findByProps("showToast");
+
   function validColor(value, fallback) {
     return typeof value === "string"
       && /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(value)
       ? value
       : fallback;
+  }
+
+  function showStateToast(enabled) {
+    if (storage.showToast === false) return;
+
+    const text = enabled
+      ? "Enabled Silent Typing — You are Now Invisible"
+      : "Disabled Silent Typing — You are Now Visible";
+
+    try {
+      Toasts?.showToast?.(
+        text,
+        getAssetIDByName("KeyboardIcon")
+          ?? getAssetIDByName("ChatIcon"),
+      );
+    } catch {}
   }
 
   function findRenderedComponent(name) {
@@ -42,7 +62,6 @@
     const enabled = storage.enabled === true;
     const normalColor = validColor(storage.normalColor, DEFAULT_NORMAL_COLOR);
     const silentColor = validColor(storage.silentColor, DEFAULT_SILENT_COLOR);
-    const iconColor = enabled ? silentColor : normalColor;
 
     const keyboardIcon =
       getAssetIDByName("KeyboardIcon")
@@ -57,8 +76,10 @@
           ? "Silent typing enabled. Tap to disable."
           : "Silent typing disabled. Tap to enable.",
         onPress: () => {
-          storage.enabled = !enabled;
+          const nextEnabled = !enabled;
+          storage.enabled = nextEnabled;
           forceRender();
+          showStateToast(nextEnabled);
         },
         hitSlop: { top: 8, bottom: 8, left: 8, right: 8 },
         style: {
@@ -87,7 +108,7 @@
           style: {
             width: 24,
             height: 24,
-            tintColor: iconColor,
+            tintColor: normalColor,
           },
         }),
         enabled && storage.showSlash !== false
@@ -327,8 +348,19 @@
         "Customize the composer toggle. Color values accept hex such as #F23F42.",
       ),
       React.createElement(SettingRow, {
+        title: "Show confirmation toast",
+        description: "Shows Visible/Invisible confirmation when the composer button is tapped.",
+        control: React.createElement(RN.Switch, {
+          value: storage.showToast !== false,
+          onValueChange: value => {
+            storage.showToast = value;
+            forceRender();
+          },
+        }),
+      }),
+      React.createElement(SettingRow, {
         title: "Show slash when silent",
-        description: "Draws a diagonal line through the keyboard icon while silent typing is enabled.",
+        description: "Silent ON: gray keyboard with a colored diagonal slash. Silent OFF: plain keyboard.",
         control: React.createElement(RN.Switch, {
           value: storage.showSlash !== false,
           onValueChange: value => {
@@ -339,7 +371,7 @@
       }),
       React.createElement(SettingRow, {
         title: "Button on right side",
-        description: "Matches the side used by BetterSilentTyping on Aliucord. Reopen the chat after changing this.",
+        description: "Places the button beside the emoji controls, matching BetterSilentTyping on Aliucord. Reopen the chat after changing this.",
         control: React.createElement(RN.Switch, {
           value: storage.buttonSide !== "left",
           onValueChange: value => {
@@ -349,13 +381,13 @@
         }),
       }),
       React.createElement(ColorInput, {
-        label: "Normal typing color",
+        label: "Keyboard color",
         storageKey: "normalColor",
         fallback: DEFAULT_NORMAL_COLOR,
         forceRender,
       }),
       React.createElement(ColorInput, {
-        label: "Silent typing color / slash",
+        label: "Silent slash color",
         storageKey: "silentColor",
         fallback: DEFAULT_SILENT_COLOR,
         forceRender,
@@ -367,6 +399,7 @@
             storage.normalColor = DEFAULT_NORMAL_COLOR;
             storage.silentColor = DEFAULT_SILENT_COLOR;
             storage.showSlash = true;
+            storage.showToast = true;
             storage.buttonSide = "right";
             forceRender();
           },
@@ -398,6 +431,7 @@
     onLoad() {
       storage.enabled ??= false;
       storage.showSlash ??= true;
+      storage.showToast ??= true;
       storage.buttonSide ??= "right";
       storage.normalColor ??= DEFAULT_NORMAL_COLOR;
       storage.silentColor ??= DEFAULT_SILENT_COLOR;
