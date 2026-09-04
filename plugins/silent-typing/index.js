@@ -82,28 +82,25 @@
     return forceRender;
   }
 
-  function showStateToast(enabled) {
-    if (storage.showToast === false) return;
-
-    const text = enabled
-      ? "Enabled Silent Typing — You are Now Invisible"
-      : "Disabled Silent Typing — You are Now Visible";
-
+  function showToast(text, icon = "KeyboardIcon") {
     try {
       Toasts?.showToast?.(
         text,
-        getAssetIDByName("KeyboardIcon") ?? getAssetIDByName("ChatIcon"),
+        getAssetIDByName(icon)
+          ?? getAssetIDByName("KeyboardIcon")
+          ?? getAssetIDByName("ChatIcon"),
       );
     } catch {}
   }
 
-  function showInfoToast(text) {
-    try {
-      Toasts?.showToast?.(
-        text,
-        getAssetIDByName("SettingsIcon") ?? getAssetIDByName("KeyboardIcon"),
-      );
-    } catch {}
+  function showStateToast(enabled) {
+    if (storage.showToast === false) return;
+
+    showToast(
+      enabled
+        ? "Enabled Silent Typing — You are Now Invisible"
+        : "Disabled Silent Typing — You are Now Visible",
+    );
   }
 
   function openColorPicker(storageKey, fallback) {
@@ -206,15 +203,101 @@
     );
   }
 
+  function pushSettingsPage(navigation) {
+    const params = {
+      title: "Silent Typing",
+      render: Settings,
+    };
+
+    let current = navigation;
+
+    for (let depth = 0; depth < 8 && current; depth += 1) {
+      try {
+        const routeNames = current.getState?.()?.routeNames;
+        if (
+          Array.isArray(routeNames)
+          && routeNames.includes("VendettaCustomPage")
+        ) {
+          if (typeof current.push === "function") {
+            current.push("VendettaCustomPage", params);
+            return true;
+          }
+          if (typeof current.navigate === "function") {
+            current.navigate("VendettaCustomPage", params);
+            return true;
+          }
+        }
+      } catch {}
+
+      try {
+        current = current.getParent?.();
+      } catch {
+        current = null;
+      }
+    }
+
+    try {
+      if (typeof navigation?.push === "function") {
+        navigation.push("VendettaCustomPage", params);
+        return true;
+      }
+    } catch {}
+
+    try {
+      if (typeof navigation?.navigate === "function") {
+        navigation.navigate("VendettaCustomPage", params);
+        return true;
+      }
+    } catch {}
+
+    return false;
+  }
+
   function SilentTypingButton() {
     usePluginRefresh();
 
     const navigation = NavigationNative?.useNavigation?.();
-    const longPressTriggered = React.useRef(false);
+    const holdTimer = React.useRef(null);
+    const holdTriggered = React.useRef(false);
+
+    React.useEffect(
+      () => () => {
+        if (holdTimer.current != null) clearTimeout(holdTimer.current);
+      },
+      [],
+    );
 
     if (storage.showButton === false) return null;
 
     const enabled = storage.enabled === true;
+
+    const clearHoldTimer = () => {
+      if (holdTimer.current != null) {
+        clearTimeout(holdTimer.current);
+        holdTimer.current = null;
+      }
+    };
+
+    const beginHold = () => {
+      clearHoldTimer();
+      holdTriggered.current = false;
+
+      holdTimer.current = setTimeout(() => {
+        holdTimer.current = null;
+        holdTriggered.current = true;
+
+        if (!pushSettingsPage(navigation)) {
+          showToast(
+            "Couldn't open settings. Use Revenge → Plugins → Silent Typing.",
+            "SettingsIcon",
+          );
+        }
+      }, SETTINGS_HOLD_MS);
+    };
+
+    const endHold = () => {
+      clearHoldTimer();
+    };
 
     return React.createElement(
       RN.Pressable,
@@ -225,24 +308,11 @@
           : "Silent typing disabled. Tap to enable.",
         accessibilityHint:
           "Tap to toggle silent typing. Hold to open Silent Typing settings.",
-        delayLongPress: SETTINGS_HOLD_MS,
-        onPressIn: () => {
-          longPressTriggered.current = false;
-        },
-        onLongPress: () => {
-          longPressTriggered.current = true;
-
-          try {
-            navigation?.push?.("VendettaCustomPage", {
-              render: Settings,
-            });
-          } catch {
-            showInfoToast("Open Silent Typing settings from Revenge → Plugins");
-          }
-        },
+        onPressIn: beginHold,
+        onPressOut: endHold,
         onPress: () => {
-          if (longPressTriggered.current) {
-            longPressTriggered.current = false;
+          if (holdTriggered.current) {
+            holdTriggered.current = false;
             return;
           }
 
@@ -313,8 +383,14 @@
   }
 
   function patchComposer() {
-    const rightPatched = patchComposerComponent("ChatInputRightActions", "right");
-    const leftPatched = patchComposerComponent("ChatInputActions", "left");
+    const rightPatched = patchComposerComponent(
+      "ChatInputRightActions",
+      "right",
+    );
+    const leftPatched = patchComposerComponent(
+      "ChatInputActions",
+      "left",
+    );
 
     if (!rightPatched && !leftPatched) {
       throw new Error("Discord chat input action components were not found");
@@ -446,7 +522,10 @@
 
     const selectColor = () => {
       if (!openColorPicker(storageKey, fallback)) {
-        showInfoToast("Color picker unavailable on this Discord build");
+        showToast(
+          "Color picker unavailable on this Discord build",
+          "SettingsIcon",
+        );
       }
       forceRender();
     };
@@ -496,7 +575,8 @@
           RN.Pressable,
           {
             accessibilityRole: "button",
-            accessibilityLabel: `Open color picker for ${title.toLowerCase()}`,
+            accessibilityLabel:
+              `Open color picker for ${title.toLowerCase()}`,
             onPress: selectColor,
             style: {
               width: 58,
@@ -702,21 +782,11 @@
           style: {
             color: "#B5BAC1",
             fontSize: 13,
-            marginBottom: 6,
-          },
-        },
-        "Plain keyboard means visible. Silent mode can use its own keyboard color and an optional slash.",
-      ),
-      React.createElement(
-        RN.Text,
-        {
-          style: {
-            color: "#80848E",
-            fontSize: 12,
             marginBottom: 12,
+            lineHeight: 18,
           },
         },
-        "Tip: hold the composer keyboard button for 1.5 seconds to open this page.",
+        "Tap the composer keyboard to toggle. Hold it for 1.5 seconds to open this page.",
       ),
       React.createElement(
         RN.View,
@@ -752,7 +822,8 @@
       }),
       React.createElement(SettingRow, {
         title: "Show confirmation popup",
-        description: "Shows Visible/Invisible confirmation whenever you tap the keyboard button.",
+        description:
+          "Shows Visible/Invisible confirmation whenever you tap the keyboard button.",
         control: React.createElement(RN.Switch, {
           value: storage.showToast !== false,
           onValueChange: value => {
@@ -763,7 +834,8 @@
       }),
       React.createElement(SettingRow, {
         title: "Show slash when silent",
-        description: "ON = slash while invisible. OFF = active/inactive keyboard colors are the visual difference.",
+        description:
+          "ON = slash while invisible. OFF = active/inactive keyboard colors are the only visual difference.",
         control: React.createElement(RN.Switch, {
           value: storage.showSlash !== false,
           onValueChange: value => {
@@ -775,7 +847,8 @@
       }),
       React.createElement(SettingRow, {
         title: "Button on right side",
-        description: "OFF places it on the left. Reopen the chat after changing sides.",
+        description:
+          "OFF places it on the left. Reopen the chat after changing sides.",
         control: React.createElement(RN.Switch, {
           value: storage.buttonSide === "right",
           onValueChange: value => {
@@ -796,7 +869,8 @@
       }),
       React.createElement(ColorControl, {
         title: "Active / silent keyboard color",
-        description: "Keyboard color while silent typing is ON.",
+        description:
+          "Keyboard color while silent typing is ON. Useful even when the slash is disabled.",
         storageKey: "silentKeyboardColor",
         alphaKey: "silentKeyboardAlpha",
         fallback: DEFAULT_SILENT_COLOR,
@@ -805,7 +879,8 @@
       }),
       React.createElement(ColorControl, {
         title: "Silent slash color",
-        description: "Independent color for the slash shown while silent typing is ON.",
+        description:
+          "Independent color for the slash shown while silent typing is ON.",
         storageKey: "slashColor",
         alphaKey: "slashAlpha",
         fallback: DEFAULT_SLASH_COLOR,
