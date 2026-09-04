@@ -10,9 +10,11 @@
   const patches = [];
   const refreshListeners = new Set();
 
-  const DEFAULT_KEYBOARD_COLOR = "#B5BAC1";
+  const DEFAULT_VISIBLE_COLOR = "#B5BAC1";
+  const DEFAULT_SILENT_COLOR = "#B5BAC1";
   const DEFAULT_SLASH_COLOR = "#F23F42";
   const DEFAULT_ALPHA = 255;
+  const CONFIG_VERSION = 2;
 
   const Typing =
     findByProps("startTyping", "stopTyping")
@@ -73,7 +75,9 @@
 
     React.useEffect(() => {
       refreshListeners.add(forceRender);
-      return () => { refreshListeners.delete(forceRender); };
+      return () => {
+        refreshListeners.delete(forceRender);
+      };
     }, []);
 
     return forceRender;
@@ -143,11 +147,20 @@
     );
   }
 
+  function getKeyboardColor(enabled) {
+    return enabled
+      ? colorWithAlpha(
+          storage.silentKeyboardColor,
+          storage.silentKeyboardAlpha,
+        )
+      : colorWithAlpha(
+          storage.visibleKeyboardColor,
+          storage.visibleKeyboardAlpha,
+        );
+  }
+
   function KeyboardGraphic({ enabled, size = 30 }) {
-    const keyboardColor = colorWithAlpha(
-      storage.keyboardColor,
-      storage.keyboardAlpha,
-    );
+    const keyboardColor = getKeyboardColor(enabled);
     const slashColor = colorWithAlpha(
       storage.slashColor,
       storage.slashAlpha,
@@ -247,7 +260,7 @@
     if (target && typeof target.render === "function") {
       patches.push(
         after("render", target, (_, result) => {
-          const useRight = storage.buttonSide !== "left";
+          const useRight = storage.buttonSide === "right";
           if ((side === "right") !== useRight) return result;
           return wrapWithButton(result, side === "right");
         }),
@@ -258,7 +271,7 @@
     if (component && typeof component.default === "function") {
       patches.push(
         after("default", component, (_, result) => {
-          const useRight = storage.buttonSide !== "left";
+          const useRight = storage.buttonSide === "right";
           if ((side === "right") !== useRight) return result;
           return wrapWithButton(result, side === "right");
         }),
@@ -277,6 +290,7 @@
       throw new Error("Discord chat input action components were not found");
     }
 
+    if (!leftPatched) storage.buttonSide = "right";
     if (!rightPatched) storage.buttonSide = "left";
   }
 
@@ -389,10 +403,11 @@
 
   function ColorControl({
     title,
+    description,
     storageKey,
     alphaKey,
     fallback,
-    previewSlash,
+    previewType,
     forceRender,
   }) {
     const hex = normalizeHex(storage[storageKey], fallback);
@@ -423,10 +438,21 @@
             color: "#F2F3F5",
             fontSize: 16,
             fontWeight: "700",
-            marginBottom: 10,
           },
         },
         title,
+      ),
+      React.createElement(
+        RN.Text,
+        {
+          style: {
+            color: "#B5BAC1",
+            fontSize: 12,
+            marginTop: 3,
+            marginBottom: 12,
+          },
+        },
+        description,
       ),
       React.createElement(
         RN.View,
@@ -440,12 +466,12 @@
           RN.Pressable,
           {
             accessibilityRole: "button",
-            accessibilityLabel: `Pick ${title.toLowerCase()}`,
+            accessibilityLabel: `Open color picker for ${title.toLowerCase()}`,
             onPress: selectColor,
             style: {
-              width: 54,
-              height: 54,
-              borderRadius: 27,
+              width: 58,
+              height: 58,
+              borderRadius: 29,
               marginRight: 12,
               backgroundColor: displayColor,
               borderWidth: 2,
@@ -454,13 +480,13 @@
               justifyContent: "center",
             },
           },
-          previewSlash
+          previewType === "slash"
             ? React.createElement(RN.View, {
                 style: {
                   width: 4,
-                  height: 42,
+                  height: 44,
                   borderRadius: 2,
-                  backgroundColor: displayColor,
+                  backgroundColor: "#111214",
                   transform: [{ rotate: "45deg" }],
                 },
               })
@@ -468,8 +494,8 @@
                 source: getKeyboardIcon(),
                 resizeMode: "contain",
                 style: {
-                  width: 30,
-                  height: 30,
+                  width: 32,
+                  height: 32,
                   tintColor: "#111214",
                 },
               }),
@@ -493,15 +519,29 @@
             hex,
           ),
           React.createElement(
-            RN.Text,
+            RN.Pressable,
             {
+              onPress: selectColor,
               style: {
-                color: "#B5BAC1",
-                fontSize: 12,
-                marginTop: 2,
+                alignSelf: "flex-start",
+                marginTop: 6,
+                paddingVertical: 6,
+                paddingHorizontal: 10,
+                borderRadius: 8,
+                backgroundColor: "#4E5058",
               },
             },
-            "Tap the color circle to open Discord's color picker.",
+            React.createElement(
+              RN.Text,
+              {
+                style: {
+                  color: "#FFFFFF",
+                  fontSize: 13,
+                  fontWeight: "600",
+                },
+              },
+              "Open color picker",
+            ),
           ),
         ),
       ),
@@ -579,61 +619,30 @@
     );
   }
 
-  function SettingsPreview() {
+  function StatePreview({ enabled, label }) {
     usePluginRefresh();
 
     return React.createElement(
       RN.View,
       {
         style: {
-          marginTop: 10,
-          marginBottom: 4,
-          paddingVertical: 14,
-          borderRadius: 12,
-          backgroundColor: "#1E1F22",
-          flexDirection: "row",
-          justifyContent: "space-around",
+          flex: 1,
+          alignItems: "center",
+          justifyContent: "center",
+          paddingVertical: 12,
         },
       },
+      React.createElement(KeyboardGraphic, { enabled, size: 40 }),
       React.createElement(
-        RN.View,
+        RN.Text,
         {
           style: {
-            alignItems: "center",
+            color: "#B5BAC1",
+            fontSize: 13,
+            marginTop: 8,
           },
         },
-        React.createElement(KeyboardGraphic, { enabled: false, size: 52 }),
-        React.createElement(
-          RN.Text,
-          {
-            style: {
-              color: "#B5BAC1",
-              fontSize: 12,
-              marginTop: 6,
-            },
-          },
-          "Visible",
-        ),
-      ),
-      React.createElement(
-        RN.View,
-        {
-          style: {
-            alignItems: "center",
-          },
-        },
-        React.createElement(KeyboardGraphic, { enabled: true, size: 52 }),
-        React.createElement(
-          RN.Text,
-          {
-            style: {
-              color: "#B5BAC1",
-              fontSize: 12,
-              marginTop: 6,
-            },
-          },
-          "Invisible",
-        ),
+        label,
       ),
     );
   }
@@ -667,12 +676,31 @@
           style: {
             color: "#B5BAC1",
             fontSize: 13,
-            marginBottom: 8,
+            marginBottom: 12,
           },
         },
-        "Aliucord-style silent typing: plain keyboard means visible; slash means your typing indicator is hidden.",
+        "Plain keyboard means visible. Silent mode can use its own keyboard color and an optional slash.",
       ),
-      React.createElement(SettingsPreview),
+      React.createElement(
+        RN.View,
+        {
+          style: {
+            flexDirection: "row",
+            borderRadius: 12,
+            backgroundColor: "#1E1F22",
+            marginBottom: 16,
+            overflow: "hidden",
+          },
+        },
+        React.createElement(StatePreview, {
+          enabled: false,
+          label: "Visible",
+        }),
+        React.createElement(StatePreview, {
+          enabled: true,
+          label: "Invisible",
+        }),
+      ),
       React.createElement(SettingRow, {
         title: "Show composer button",
         description: "Shows the keyboard toggle beside the chat controls.",
@@ -698,7 +726,7 @@
       }),
       React.createElement(SettingRow, {
         title: "Show slash when silent",
-        description: "ON = slash while invisible. OFF = no visual slash.",
+        description: "ON = slash while invisible. OFF = active/inactive keyboard colors are the only visual difference.",
         control: React.createElement(RN.Switch, {
           value: storage.showSlash !== false,
           onValueChange: value => {
@@ -710,50 +738,64 @@
       }),
       React.createElement(SettingRow, {
         title: "Button on right side",
-        description: "Places it beside the emoji/right-side chat controls like BetterSilentTyping. Reopen the chat after changing sides.",
+        description: "OFF places it on the left by default. Reopen the chat after changing sides.",
         control: React.createElement(RN.Switch, {
-          value: storage.buttonSide !== "left",
+          value: storage.buttonSide === "right",
           onValueChange: value => {
             storage.buttonSide = value ? "right" : "left";
             forceRender();
+            notifyRefresh();
           },
         }),
       }),
       React.createElement(ColorControl, {
-        title: "Keyboard icon color",
-        storageKey: "keyboardColor",
-        alphaKey: "keyboardAlpha",
-        fallback: DEFAULT_KEYBOARD_COLOR,
-        previewSlash: false,
+        title: "Inactive / visible keyboard color",
+        description: "Keyboard color while silent typing is OFF.",
+        storageKey: "visibleKeyboardColor",
+        alphaKey: "visibleKeyboardAlpha",
+        fallback: DEFAULT_VISIBLE_COLOR,
+        previewType: "keyboard",
+        forceRender,
+      }),
+      React.createElement(ColorControl, {
+        title: "Active / silent keyboard color",
+        description: "Keyboard color while silent typing is ON. This remains useful when the slash is disabled.",
+        storageKey: "silentKeyboardColor",
+        alphaKey: "silentKeyboardAlpha",
+        fallback: DEFAULT_SILENT_COLOR,
+        previewType: "keyboard",
         forceRender,
       }),
       React.createElement(ColorControl, {
         title: "Silent slash color",
+        description: "Independent color for the slash shown while silent typing is ON.",
         storageKey: "slashColor",
         alphaKey: "slashAlpha",
         fallback: DEFAULT_SLASH_COLOR,
-        previewSlash: true,
+        previewType: "slash",
         forceRender,
       }),
       React.createElement(
         RN.Pressable,
         {
           onPress: () => {
-            storage.keyboardColor = DEFAULT_KEYBOARD_COLOR;
-            storage.keyboardAlpha = DEFAULT_ALPHA;
+            storage.visibleKeyboardColor = DEFAULT_VISIBLE_COLOR;
+            storage.visibleKeyboardAlpha = DEFAULT_ALPHA;
+            storage.silentKeyboardColor = DEFAULT_SILENT_COLOR;
+            storage.silentKeyboardAlpha = DEFAULT_ALPHA;
             storage.slashColor = DEFAULT_SLASH_COLOR;
             storage.slashAlpha = DEFAULT_ALPHA;
-            storage.showSlash = true;
-            storage.showToast = true;
             storage.showButton = true;
-            storage.buttonSide = "right";
+            storage.showToast = true;
+            storage.showSlash = true;
+            storage.buttonSide = "left";
             forceRender();
             notifyRefresh();
           },
           style: {
-            marginTop: 20,
-            minHeight: 44,
-            borderRadius: 8,
+            marginTop: 22,
+            minHeight: 46,
+            borderRadius: 10,
             alignItems: "center",
             justifyContent: "center",
             backgroundColor: "#4E5058",
@@ -765,7 +807,7 @@
             style: {
               color: "#FFFFFF",
               fontSize: 15,
-              fontWeight: "600",
+              fontWeight: "700",
             },
           },
           "Reset all appearance settings",
@@ -774,29 +816,43 @@
     );
   }
 
+  function migrateStorage() {
+    if (!storage.visibleKeyboardColor) {
+      storage.visibleKeyboardColor =
+        storage.keyboardColor ?? DEFAULT_VISIBLE_COLOR;
+    }
+    if (storage.visibleKeyboardAlpha == null) {
+      storage.visibleKeyboardAlpha =
+        storage.keyboardAlpha ?? DEFAULT_ALPHA;
+    }
+
+    if (!storage.silentKeyboardColor) {
+      storage.silentKeyboardColor =
+        storage.keyboardColor ?? DEFAULT_SILENT_COLOR;
+    }
+    if (storage.silentKeyboardAlpha == null) {
+      storage.silentKeyboardAlpha =
+        storage.keyboardAlpha ?? DEFAULT_ALPHA;
+    }
+
+    storage.slashColor ??= DEFAULT_SLASH_COLOR;
+    storage.slashAlpha ??= DEFAULT_ALPHA;
+    storage.showButton ??= true;
+    storage.showToast ??= true;
+    storage.showSlash ??= true;
+    storage.enabled ??= false;
+
+    if ((storage.configVersion ?? 0) < CONFIG_VERSION) {
+      storage.buttonSide = "left";
+      storage.configVersion = CONFIG_VERSION;
+    } else {
+      storage.buttonSide ??= "left";
+    }
+  }
+
   return {
     onLoad() {
-      storage.enabled ??= false;
-      storage.showSlash ??= true;
-      storage.showToast ??= true;
-      storage.showButton ??= true;
-      storage.buttonSide ??= "right";
-
-      // Migrate colors from earlier releases.
-      storage.keyboardColor ??= storage.normalColor ?? DEFAULT_KEYBOARD_COLOR;
-      storage.slashColor ??= storage.silentColor ?? DEFAULT_SLASH_COLOR;
-      storage.keyboardAlpha ??= DEFAULT_ALPHA;
-      storage.slashAlpha ??= DEFAULT_ALPHA;
-
-      storage.keyboardColor = normalizeHex(
-        storage.keyboardColor,
-        DEFAULT_KEYBOARD_COLOR,
-      );
-      storage.slashColor = normalizeHex(
-        storage.slashColor,
-        DEFAULT_SLASH_COLOR,
-      );
-
+      migrateStorage();
       patchComposer();
       patchTyping();
     },
