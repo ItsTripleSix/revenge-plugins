@@ -8,8 +8,11 @@
   const { storage } = vendetta.plugin;
 
   const patches = [];
-  const DEFAULT_NORMAL_COLOR = "#B5BAC1";
-  const DEFAULT_SILENT_COLOR = "#F23F42";
+  const refreshListeners = new Set();
+
+  const DEFAULT_KEYBOARD_COLOR = "#B5BAC1";
+  const DEFAULT_SLASH_COLOR = "#F23F42";
+  const DEFAULT_ALPHA = 255;
 
   const Typing =
     findByProps("startTyping", "stopTyping")
@@ -19,11 +22,61 @@
     vendetta.ui?.toasts
     ?? findByProps("showToast");
 
-  function validColor(value, fallback) {
-    return typeof value === "string"
-      && /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(value)
-      ? value
-      : fallback;
+  const ActionSheet =
+    findByProps("openLazy", "hideActionSheet");
+
+  const CustomColorPickerActionSheet =
+    findByName("CustomColorPickerActionSheet", false)
+    ?? findByName("CustomColorPickerActionSheet");
+
+  function clampByte(value, fallback = 255) {
+    const parsed = Number.parseInt(value, 10);
+    if (!Number.isFinite(parsed)) return fallback;
+    return Math.max(0, Math.min(255, parsed));
+  }
+
+  function normalizeHex(value, fallback) {
+    if (typeof value !== "string") return fallback;
+
+    let hex = value.trim().replace(/^#/, "");
+    if (/^[0-9a-fA-F]{3}$/.test(hex)) {
+      hex = hex.split("").map(char => char + char).join("");
+    }
+
+    if (/^[0-9a-fA-F]{8}$/.test(hex)) {
+      hex = hex.slice(0, 6);
+    }
+
+    if (!/^[0-9a-fA-F]{6}$/.test(hex)) return fallback;
+    return `#${hex.toUpperCase()}`;
+  }
+
+  function colorWithAlpha(hex, alpha) {
+    const normalized = normalizeHex(hex, "#FFFFFF");
+    const r = Number.parseInt(normalized.slice(1, 3), 16);
+    const g = Number.parseInt(normalized.slice(3, 5), 16);
+    const b = Number.parseInt(normalized.slice(5, 7), 16);
+    const a = clampByte(alpha, DEFAULT_ALPHA) / 255;
+    return `rgba(${r}, ${g}, ${b}, ${a})`;
+  }
+
+  function notifyRefresh() {
+    for (const listener of refreshListeners) {
+      try {
+        listener();
+      } catch {}
+    }
+  }
+
+  function usePluginRefresh() {
+    const [, forceRender] = React.useReducer(value => value + 1, 0);
+
+    React.useEffect(() => {
+      refreshListeners.add(forceRender);
+      return () => { refreshListeners.delete(forceRender); };
+    }, []);
+
+    return forceRender;
   }
 
   function showStateToast(enabled) {
@@ -42,6 +95,31 @@
     } catch {}
   }
 
+  function openColorPicker(storageKey, fallback) {
+    if (!ActionSheet?.openLazy || !CustomColorPickerActionSheet) return false;
+
+    const current = normalizeHex(storage[storageKey], fallback);
+
+    try {
+      ActionSheet.openLazy(
+        Promise.resolve({ default: CustomColorPickerActionSheet }),
+        `silent-typing-${storageKey}-color`,
+        {
+          color: Number.parseInt(current.slice(1), 16),
+          onSelect: color => {
+            const rgb = Number(color) & 0xFFFFFF;
+            storage[storageKey] =
+              `#${rgb.toString(16).padStart(6, "0").toUpperCase()}`;
+            notifyRefresh();
+          },
+        },
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   function findRenderedComponent(name) {
     try {
       const byDisplayName = find(
@@ -57,16 +135,65 @@
     }
   }
 
-  function SilentTypingButton() {
-    const [, forceRender] = React.useReducer(value => value + 1, 0);
-    const enabled = storage.enabled === true;
-    const normalColor = validColor(storage.normalColor, DEFAULT_NORMAL_COLOR);
-    const silentColor = validColor(storage.silentColor, DEFAULT_SILENT_COLOR);
-
-    const keyboardIcon =
+  function getKeyboardIcon() {
+    return (
       getAssetIDByName("KeyboardIcon")
       ?? getAssetIDByName("ChatIcon")
-      ?? getAssetIDByName("PencilIcon");
+      ?? getAssetIDByName("PencilIcon")
+    );
+  }
+
+  function KeyboardGraphic({ enabled, size = 30 }) {
+    const keyboardColor = colorWithAlpha(
+      storage.keyboardColor,
+      storage.keyboardAlpha,
+    );
+    const slashColor = colorWithAlpha(
+      storage.slashColor,
+      storage.slashAlpha,
+    );
+
+    return React.createElement(
+      RN.View,
+      {
+        pointerEvents: "none",
+        style: {
+          width: size,
+          height: size,
+          alignItems: "center",
+          justifyContent: "center",
+        },
+      },
+      React.createElement(RN.Image, {
+        source: getKeyboardIcon(),
+        resizeMode: "contain",
+        style: {
+          width: size * 0.8,
+          height: size * 0.8,
+          tintColor: keyboardColor,
+        },
+      }),
+      enabled && storage.showSlash !== false
+        ? React.createElement(RN.View, {
+            style: {
+              position: "absolute",
+              width: Math.max(3, size * 0.09),
+              height: size * 1.05,
+              borderRadius: 2,
+              backgroundColor: slashColor,
+              transform: [{ rotate: "45deg" }],
+            },
+          })
+        : null,
+    );
+  }
+
+  function SilentTypingButton() {
+    usePluginRefresh();
+
+    if (storage.showButton === false) return null;
+
+    const enabled = storage.enabled === true;
 
     return React.createElement(
       RN.Pressable,
@@ -78,7 +205,7 @@
         onPress: () => {
           const nextEnabled = !enabled;
           storage.enabled = nextEnabled;
-          forceRender();
+          notifyRefresh();
           showStateToast(nextEnabled);
         },
         hitSlop: { top: 8, bottom: 8, left: 8, right: 8 },
@@ -91,39 +218,7 @@
           justifyContent: "center",
         },
       },
-      React.createElement(
-        RN.View,
-        {
-          pointerEvents: "none",
-          style: {
-            width: 30,
-            height: 30,
-            alignItems: "center",
-            justifyContent: "center",
-          },
-        },
-        React.createElement(RN.Image, {
-          source: keyboardIcon,
-          resizeMode: "contain",
-          style: {
-            width: 24,
-            height: 24,
-            tintColor: normalColor,
-          },
-        }),
-        enabled && storage.showSlash !== false
-          ? React.createElement(RN.View, {
-              style: {
-                position: "absolute",
-                width: 3,
-                height: 32,
-                borderRadius: 2,
-                backgroundColor: silentColor,
-                transform: [{ rotate: "45deg" }],
-              },
-            })
-          : null,
-      ),
+      React.createElement(KeyboardGraphic, { enabled, size: 30 }),
     );
   }
 
@@ -249,15 +344,76 @@
     );
   }
 
-  function ColorInput({ label, storageKey, fallback, forceRender }) {
-    const value = storage[storageKey] ?? fallback;
-    const preview = validColor(value, fallback);
+  function AlphaInput({ storageKey, forceRender }) {
+    const initial = String(clampByte(storage[storageKey], DEFAULT_ALPHA));
+    const [text, setText] = React.useState(initial);
+
+    React.useEffect(() => {
+      setText(String(clampByte(storage[storageKey], DEFAULT_ALPHA)));
+    }, [storage[storageKey]]);
+
+    return React.createElement(RN.TextInput, {
+      value: text,
+      keyboardType: "number-pad",
+      maxLength: 3,
+      selectTextOnFocus: true,
+      onChangeText: value => {
+        const cleaned = value.replace(/\D/g, "").slice(0, 3);
+        setText(cleaned);
+
+        if (cleaned.length > 0) {
+          storage[storageKey] = clampByte(cleaned, DEFAULT_ALPHA);
+          forceRender();
+          notifyRefresh();
+        }
+      },
+      onBlur: () => {
+        const normalized = clampByte(text, DEFAULT_ALPHA);
+        storage[storageKey] = normalized;
+        setText(String(normalized));
+        forceRender();
+        notifyRefresh();
+      },
+      style: {
+        width: 64,
+        minHeight: 38,
+        paddingHorizontal: 10,
+        borderRadius: 8,
+        backgroundColor: "#1E1F22",
+        color: "#F2F3F5",
+        textAlign: "center",
+        fontSize: 15,
+      },
+    });
+  }
+
+  function ColorControl({
+    title,
+    storageKey,
+    alphaKey,
+    fallback,
+    previewSlash,
+    forceRender,
+  }) {
+    const hex = normalizeHex(storage[storageKey], fallback);
+    const alpha = clampByte(storage[alphaKey], DEFAULT_ALPHA);
+    const displayColor = colorWithAlpha(hex, alpha);
+
+    const selectColor = () => {
+      if (!openColorPicker(storageKey, fallback)) {
+        Toasts?.showToast?.("Color picker unavailable on this Discord build");
+      }
+      forceRender();
+    };
 
     return React.createElement(
       RN.View,
       {
         style: {
-          marginTop: 14,
+          marginTop: 18,
+          padding: 14,
+          borderRadius: 12,
+          backgroundColor: "#2B2D31",
         },
       },
       React.createElement(
@@ -265,12 +421,12 @@
         {
           style: {
             color: "#F2F3F5",
-            fontSize: 14,
-            fontWeight: "600",
-            marginBottom: 6,
+            fontSize: 16,
+            fontWeight: "700",
+            marginBottom: 10,
           },
         },
-        label,
+        title,
       ),
       React.createElement(
         RN.View,
@@ -280,41 +436,210 @@
             alignItems: "center",
           },
         },
-        React.createElement(RN.View, {
-          style: {
-            width: 28,
-            height: 28,
-            borderRadius: 6,
-            marginRight: 10,
-            backgroundColor: preview,
+        React.createElement(
+          RN.Pressable,
+          {
+            accessibilityRole: "button",
+            accessibilityLabel: `Pick ${title.toLowerCase()}`,
+            onPress: selectColor,
+            style: {
+              width: 54,
+              height: 54,
+              borderRadius: 27,
+              marginRight: 12,
+              backgroundColor: displayColor,
+              borderWidth: 2,
+              borderColor: "#4E5058",
+              alignItems: "center",
+              justifyContent: "center",
+            },
           },
+          previewSlash
+            ? React.createElement(RN.View, {
+                style: {
+                  width: 4,
+                  height: 42,
+                  borderRadius: 2,
+                  backgroundColor: displayColor,
+                  transform: [{ rotate: "45deg" }],
+                },
+              })
+            : React.createElement(RN.Image, {
+                source: getKeyboardIcon(),
+                resizeMode: "contain",
+                style: {
+                  width: 30,
+                  height: 30,
+                  tintColor: "#111214",
+                },
+              }),
+        ),
+        React.createElement(
+          RN.View,
+          {
+            style: {
+              flex: 1,
+            },
+          },
+          React.createElement(
+            RN.Text,
+            {
+              style: {
+                color: "#F2F3F5",
+                fontSize: 15,
+                fontWeight: "600",
+              },
+            },
+            hex,
+          ),
+          React.createElement(
+            RN.Text,
+            {
+              style: {
+                color: "#B5BAC1",
+                fontSize: 12,
+                marginTop: 2,
+              },
+            },
+            "Tap the color circle to open Discord's color picker.",
+          ),
+        ),
+      ),
+      React.createElement(
+        RN.View,
+        {
+          style: {
+            marginTop: 12,
+            flexDirection: "row",
+            alignItems: "center",
+            justifyContent: "space-between",
+          },
+        },
+        React.createElement(
+          RN.View,
+          null,
+          React.createElement(
+            RN.Text,
+            {
+              style: {
+                color: "#F2F3F5",
+                fontSize: 14,
+                fontWeight: "600",
+              },
+            },
+            "Alpha",
+          ),
+          React.createElement(
+            RN.Text,
+            {
+              style: {
+                color: "#B5BAC1",
+                fontSize: 12,
+                marginTop: 2,
+              },
+            },
+            "0 = transparent, 255 = opaque",
+          ),
+        ),
+        React.createElement(AlphaInput, {
+          storageKey: alphaKey,
+          forceRender,
         }),
-        React.createElement(RN.TextInput, {
-          value,
-          autoCapitalize: "characters",
-          autoCorrect: false,
-          placeholder: fallback,
-          placeholderTextColor: "#80848E",
-          onChangeText: text => {
-            storage[storageKey] = text;
+      ),
+      React.createElement(
+        RN.Pressable,
+        {
+          onPress: () => {
+            storage[storageKey] = fallback;
+            storage[alphaKey] = DEFAULT_ALPHA;
             forceRender();
+            notifyRefresh();
           },
           style: {
-            flex: 1,
-            minHeight: 40,
+            marginTop: 12,
+            alignSelf: "flex-start",
+            paddingVertical: 7,
             paddingHorizontal: 12,
             borderRadius: 8,
-            backgroundColor: "#1E1F22",
-            color: "#F2F3F5",
-            fontSize: 15,
+            backgroundColor: "#4E5058",
           },
-        }),
+        },
+        React.createElement(
+          RN.Text,
+          {
+            style: {
+              color: "#FFFFFF",
+              fontSize: 13,
+              fontWeight: "600",
+            },
+          },
+          "Reset color",
+        ),
+      ),
+    );
+  }
+
+  function SettingsPreview() {
+    usePluginRefresh();
+
+    return React.createElement(
+      RN.View,
+      {
+        style: {
+          marginTop: 10,
+          marginBottom: 4,
+          paddingVertical: 14,
+          borderRadius: 12,
+          backgroundColor: "#1E1F22",
+          flexDirection: "row",
+          justifyContent: "space-around",
+        },
+      },
+      React.createElement(
+        RN.View,
+        {
+          style: {
+            alignItems: "center",
+          },
+        },
+        React.createElement(KeyboardGraphic, { enabled: false, size: 52 }),
+        React.createElement(
+          RN.Text,
+          {
+            style: {
+              color: "#B5BAC1",
+              fontSize: 12,
+              marginTop: 6,
+            },
+          },
+          "Visible",
+        ),
+      ),
+      React.createElement(
+        RN.View,
+        {
+          style: {
+            alignItems: "center",
+          },
+        },
+        React.createElement(KeyboardGraphic, { enabled: true, size: 52 }),
+        React.createElement(
+          RN.Text,
+          {
+            style: {
+              color: "#B5BAC1",
+              fontSize: 12,
+              marginTop: 6,
+            },
+          },
+          "Invisible",
+        ),
       ),
     );
   }
 
   function Settings() {
-    const [, forceRender] = React.useReducer(value => value + 1, 0);
+    const forceRender = usePluginRefresh();
 
     return React.createElement(
       RN.ScrollView,
@@ -342,14 +667,27 @@
           style: {
             color: "#B5BAC1",
             fontSize: 13,
-            marginBottom: 12,
+            marginBottom: 8,
           },
         },
-        "Customize the composer toggle. Color values accept hex such as #F23F42.",
+        "Aliucord-style silent typing: plain keyboard means visible; slash means your typing indicator is hidden.",
       ),
+      React.createElement(SettingsPreview),
       React.createElement(SettingRow, {
-        title: "Show confirmation toast",
-        description: "Shows Visible/Invisible confirmation when the composer button is tapped.",
+        title: "Show composer button",
+        description: "Shows the keyboard toggle beside the chat controls.",
+        control: React.createElement(RN.Switch, {
+          value: storage.showButton !== false,
+          onValueChange: value => {
+            storage.showButton = value;
+            forceRender();
+            notifyRefresh();
+          },
+        }),
+      }),
+      React.createElement(SettingRow, {
+        title: "Show confirmation popup",
+        description: "Shows Visible/Invisible confirmation whenever you tap the keyboard button.",
         control: React.createElement(RN.Switch, {
           value: storage.showToast !== false,
           onValueChange: value => {
@@ -360,18 +698,19 @@
       }),
       React.createElement(SettingRow, {
         title: "Show slash when silent",
-        description: "Silent ON: gray keyboard with a colored diagonal slash. Silent OFF: plain keyboard.",
+        description: "ON = slash while invisible. OFF = no visual slash.",
         control: React.createElement(RN.Switch, {
           value: storage.showSlash !== false,
           onValueChange: value => {
             storage.showSlash = value;
             forceRender();
+            notifyRefresh();
           },
         }),
       }),
       React.createElement(SettingRow, {
         title: "Button on right side",
-        description: "Places the button beside the emoji controls, matching BetterSilentTyping on Aliucord. Reopen the chat after changing this.",
+        description: "Places it beside the emoji/right-side chat controls like BetterSilentTyping. Reopen the chat after changing sides.",
         control: React.createElement(RN.Switch, {
           value: storage.buttonSide !== "left",
           onValueChange: value => {
@@ -380,28 +719,36 @@
           },
         }),
       }),
-      React.createElement(ColorInput, {
-        label: "Keyboard color",
-        storageKey: "normalColor",
-        fallback: DEFAULT_NORMAL_COLOR,
+      React.createElement(ColorControl, {
+        title: "Keyboard icon color",
+        storageKey: "keyboardColor",
+        alphaKey: "keyboardAlpha",
+        fallback: DEFAULT_KEYBOARD_COLOR,
+        previewSlash: false,
         forceRender,
       }),
-      React.createElement(ColorInput, {
-        label: "Silent slash color",
-        storageKey: "silentColor",
-        fallback: DEFAULT_SILENT_COLOR,
+      React.createElement(ColorControl, {
+        title: "Silent slash color",
+        storageKey: "slashColor",
+        alphaKey: "slashAlpha",
+        fallback: DEFAULT_SLASH_COLOR,
+        previewSlash: true,
         forceRender,
       }),
       React.createElement(
         RN.Pressable,
         {
           onPress: () => {
-            storage.normalColor = DEFAULT_NORMAL_COLOR;
-            storage.silentColor = DEFAULT_SILENT_COLOR;
+            storage.keyboardColor = DEFAULT_KEYBOARD_COLOR;
+            storage.keyboardAlpha = DEFAULT_ALPHA;
+            storage.slashColor = DEFAULT_SLASH_COLOR;
+            storage.slashAlpha = DEFAULT_ALPHA;
             storage.showSlash = true;
             storage.showToast = true;
+            storage.showButton = true;
             storage.buttonSide = "right";
             forceRender();
+            notifyRefresh();
           },
           style: {
             marginTop: 20,
@@ -421,7 +768,7 @@
               fontWeight: "600",
             },
           },
-          "Reset appearance",
+          "Reset all appearance settings",
         ),
       ),
     );
@@ -432,9 +779,23 @@
       storage.enabled ??= false;
       storage.showSlash ??= true;
       storage.showToast ??= true;
+      storage.showButton ??= true;
       storage.buttonSide ??= "right";
-      storage.normalColor ??= DEFAULT_NORMAL_COLOR;
-      storage.silentColor ??= DEFAULT_SILENT_COLOR;
+
+      // Migrate colors from earlier releases.
+      storage.keyboardColor ??= storage.normalColor ?? DEFAULT_KEYBOARD_COLOR;
+      storage.slashColor ??= storage.silentColor ?? DEFAULT_SLASH_COLOR;
+      storage.keyboardAlpha ??= DEFAULT_ALPHA;
+      storage.slashAlpha ??= DEFAULT_ALPHA;
+
+      storage.keyboardColor = normalizeHex(
+        storage.keyboardColor,
+        DEFAULT_KEYBOARD_COLOR,
+      );
+      storage.slashColor = normalizeHex(
+        storage.slashColor,
+        DEFAULT_SLASH_COLOR,
+      );
 
       patchComposer();
       patchTyping();
@@ -446,6 +807,7 @@
           patches.pop()?.();
         } catch {}
       }
+      refreshListeners.clear();
     },
 
     settings: Settings,
