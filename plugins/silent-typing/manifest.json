@@ -1,13 +1,13 @@
 {
   "name": "Silent Typing",
-  "description": "Adds a tap-to-toggle silent typing button directly to the chat input.",
+  "description": "Adds a customizable Aliucord-style silent typing toggle to the chat input.",
   "authors": [
     {
       "name": "ItsTripleSix"
     }
   ],
   "main": "index.js",
-  "hash": "fd8b7fc8fa63f31cb10f6ea1756a3e6d6cd3edf4cad8e1f738556e974897667b",
+  "hash": "66330861237ae5a67bf3dd4fe51846a72310985846c5b6dbe94be8071ea2fce6",
   "vendetta": {
     "icon": "KeyboardIcon"
   }
