@@ -6,14 +6,18 @@ Custom Revenge Classic plugins focused on privacy, quality-of-life, and restorin
 
 ### Silent Typing
 
-Adds an Aliucord-style button to the Discord message composer for toggling typing indicators.
+Adds an Aliucord-style silent-typing toggle directly to Discord's mobile message composer.
 
-- **Silent ON:** outgoing typing events are blocked.
-- **Silent OFF:** Discord's normal typing behavior is restored.
-- Keyboard icon with a configurable slash makes the current state obvious.
-- Normal and silent-state colors are customizable.
-- Button can be placed on either side of the composer actions.
-- Settings persist between restarts.
+- **Visible / normal typing:** plain keyboard icon.
+- **Invisible / silent typing:** same keyboard icon with a configurable slash over it.
+- Tapping the icon shows a confirmation popup telling you whether typing is now Visible or Invisible.
+- Keyboard and slash colors are independently configurable.
+- Both colors support independent alpha/transparency values.
+- Color swatches open Discord's native color picker when available.
+- Live settings preview shows both Visible and Invisible states.
+- Composer button, slash indicator, confirmation popup, and button side are configurable.
+- Silent mode blocks Discord's outgoing typing event; normal mode restores Discord's original typing behavior.
+- Settings and silent state persist between restarts.
 
 Install in **Discord Settings → Revenge → Plugins → +**:
 
@@ -21,7 +25,7 @@ Install in **Discord Settings → Revenge → Plugins → +**:
 https://raw.githubusercontent.com/ItsTripleSix/revenge-plugins/main/plugins/silent-typing/
 ```
 
-Open the plugin's settings page in Revenge to change the colors, slash indicator, or button side.
+Open the plugin's settings page in Revenge to customize its appearance and behavior.
 
 ## Compatibility
 
