@@ -10,6 +10,10 @@
   const patches = [];
   const refreshListeners = new Set();
 
+  let guardPatched = false;
+  let liveChatInput = null;
+  let refreshFrame = null;
+
   const DEFAULT_VISIBLE_COLOR = "#B5BAC1";
   const DEFAULT_SILENT_COLOR = "#B5BAC1";
   const DEFAULT_SLASH_COLOR = "#F23F42";
@@ -136,6 +140,113 @@
     } catch {
       return null;
     }
+  }
+
+  function findInReactTree(node, predicate, seen = new Set(), depth = 0) {
+    if (node == null || depth > 60) return null;
+
+    if (Array.isArray(node)) {
+      for (const child of node) {
+        const found = findInReactTree(child, predicate, seen, depth + 1);
+        if (found) return found;
+      }
+      return null;
+    }
+
+    if (typeof node !== "object") return null;
+    if (seen.has(node)) return null;
+    seen.add(node);
+
+    try {
+      if (predicate(node)) return node;
+    } catch {}
+
+    const children = node.props?.children;
+    if (children !== undefined) {
+      const found = findInReactTree(children, predicate, seen, depth + 1);
+      if (found) return found;
+    }
+
+    return null;
+  }
+
+  function refreshLiveComposer(ref = liveChatInput) {
+    if (!ref) return false;
+
+    try {
+      ref.showSideActions?.();
+      return typeof ref.showSideActions === "function";
+    } catch {
+      return false;
+    }
+  }
+
+  function scheduleLiveRefresh(ref) {
+    if (!ref) return;
+
+    liveChatInput = ref;
+
+    try {
+      if (refreshFrame != null && typeof cancelAnimationFrame === "function") {
+        cancelAnimationFrame(refreshFrame);
+      }
+
+      if (typeof requestAnimationFrame === "function") {
+        refreshFrame = requestAnimationFrame(() => {
+          refreshFrame = null;
+          refreshLiveComposer(ref);
+        });
+        return;
+      }
+    } catch {}
+
+    setTimeout(() => refreshLiveComposer(ref), 0);
+  }
+
+  function refreshComposerSoon() {
+    setTimeout(() => refreshLiveComposer(), 0);
+  }
+
+  function patchChatInputGuard() {
+    if (guardPatched) return true;
+
+    let wrapper = null;
+    try {
+      wrapper = findByName("ChatInputGuardWrapper", false)
+        ?? findByName("ChatInputGuardWrapper");
+    } catch {}
+
+    if (!wrapper) return false;
+
+    let target = null;
+    let method = null;
+
+    if (typeof wrapper.default === "function") {
+      target = wrapper;
+      method = "default";
+    } else if (wrapper?.type && typeof wrapper.type.render === "function") {
+      target = wrapper.type;
+      method = "render";
+    }
+
+    if (!target || !method) return false;
+
+    patches.push(
+      after(method, target, (_, result) => {
+        const node = findInReactTree(
+          result,
+          value => value?.props?.chatInputRef?.current,
+        );
+
+        const ref = node?.props?.chatInputRef?.current;
+        if (ref) scheduleLiveRefresh(ref);
+
+        return result;
+      }),
+    );
+
+    guardPatched = true;
+    return true;
   }
 
   function getKeyboardIcon() {
@@ -737,13 +848,14 @@
       }),
       React.createElement(SettingRow, {
         title: "Button on right side",
-        description: "OFF places it on the left by default. Reopen the chat after changing sides.",
+        description: "OFF places it on the left by default. Changes apply immediately.",
         control: React.createElement(RN.Switch, {
           value: storage.buttonSide === "right",
           onValueChange: value => {
             storage.buttonSide = value ? "right" : "left";
             forceRender();
             notifyRefresh();
+            refreshComposerSoon();
           },
         }),
       }),
@@ -790,6 +902,7 @@
             storage.buttonSide = "left";
             forceRender();
             notifyRefresh();
+            refreshComposerSoon();
           },
           style: {
             marginTop: 22,
@@ -849,14 +962,28 @@
     }
   }
 
+  const guardPatchedEarly = patchChatInputGuard();
+
   return {
     onLoad() {
       migrateStorage();
       patchComposer();
       patchTyping();
+      patchChatInputGuard();
+      refreshComposerSoon();
     },
 
     onUnload() {
+      try {
+        if (refreshFrame != null && typeof cancelAnimationFrame === "function") {
+          cancelAnimationFrame(refreshFrame);
+        }
+      } catch {}
+
+      refreshFrame = null;
+      liveChatInput = null;
+      guardPatched = false;
+
       while (patches.length) {
         try {
           patches.pop()?.();
