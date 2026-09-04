@@ -28,8 +28,7 @@
     findByProps("openLazy", "hideActionSheet");
 
   const CustomColorPickerActionSheet =
-    findByName("CustomColorPickerActionSheet", false)
-    ?? findByName("CustomColorPickerActionSheet");
+    findByName("CustomColorPickerActionSheet");
 
   function clampByte(value, fallback = 255) {
     const parsed = Number.parseInt(value, 10);
@@ -107,7 +106,7 @@
     try {
       ActionSheet.openLazy(
         Promise.resolve({ default: CustomColorPickerActionSheet }),
-        `silent-typing-${storageKey}-color`,
+        "ActionSheet",
         {
           color: Number.parseInt(current.slice(1), 16),
           onSelect: color => {
