@@ -2,22 +2,12 @@
   "use strict";
 
   const { before, after } = vendetta.patcher;
-  const { find, findByName } = vendetta.metro;
+  const { find, findByName, findByStoreName } = vendetta.metro;
   const { React, ReactNative: RN } = vendetta.metro.common;
-  const { getAssetIDByName } = vendetta.ui.assets;
   const { storage } = vendetta.plugin;
 
   const patches = [];
-
-  const Toasts =
-    vendetta.ui?.toasts
-    ?? (() => {
-      try {
-        return vendetta.metro.findByProps("showToast");
-      } catch {
-        return null;
-      }
-    })();
+  const refreshTimers = [];
 
   const DEFAULTS = {
     hideAttachment: false,
@@ -28,21 +18,46 @@
     hideThread: false,
   };
 
+  const refreshStores = [
+    "SelectedChannelStore",
+    "SelectedGuildStore",
+    "DraftStore",
+  ]
+    .map(name => {
+      try {
+        return findByStoreName?.(name);
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean);
+
   function ensureDefaults() {
     for (const [key, value] of Object.entries(DEFAULTS)) {
       storage[key] ??= value;
     }
   }
 
-  function showToast(message) {
-    try {
-      Toasts?.showToast?.(
-        message,
-        getAssetIDByName("TuneIcon")
-          ?? getAssetIDByName("SettingsIcon")
-          ?? getAssetIDByName("ChatIcon"),
-      );
-    } catch {}
+  function refreshComposer() {
+    for (const store of refreshStores) {
+      try {
+        store?.emitChange?.();
+      } catch {}
+    }
+  }
+
+  function scheduleRefreshes() {
+    for (const delay of [250, 1000, 2500]) {
+      refreshTimers.push(setTimeout(refreshComposer, delay));
+    }
+  }
+
+  function clearRefreshes() {
+    while (refreshTimers.length) {
+      try {
+        clearTimeout(refreshTimers.pop());
+      } catch {}
+    }
   }
 
   function findRenderedComponent(name) {
@@ -80,7 +95,7 @@
     const type = element.type;
     const icon = props.IconComponent ?? props.iconComponent ?? props.Icon;
 
-    const parts = [
+    return [
       props.accessibilityLabel,
       props.accessibilityHint,
       props.label,
@@ -91,9 +106,7 @@
       typeof type === "function" ? type.name : null,
       icon?.displayName,
       icon?.name,
-    ];
-
-    return parts
+    ]
       .filter(value => typeof value === "string" && value.length)
       .join(" ")
       .toLowerCase();
@@ -101,7 +114,6 @@
 
   function matchesNativeControl(element) {
     const description = describeElement(element);
-
     if (!description) return false;
 
     if (
@@ -179,9 +191,6 @@
     }
 
     if (!React.isValidElement(node)) return node;
-
-    // Only remove elements we can positively identify as Discord native controls.
-    // Unknown/custom composer buttons are preserved for compatibility with other plugins.
     if (matchesNativeControl(node)) return null;
 
     const children = node.props?.children;
@@ -261,6 +270,13 @@
     return true;
   }
 
+  function setOption(key, value, forceRender) {
+    storage[key] = value;
+    forceRender();
+    refreshComposer();
+    refreshTimers.push(setTimeout(refreshComposer, 100));
+  }
+
   function SettingRow({ title, description, storageKey, forceRender }) {
     return React.createElement(
       RN.View,
@@ -295,10 +311,7 @@
         ),
         React.createElement(RN.Switch, {
           value: storage[storageKey] === true,
-          onValueChange: value => {
-            storage[storageKey] = value;
-            forceRender();
-          },
+          onValueChange: value => setOption(storageKey, value, forceRender),
         }),
       ),
       React.createElement(
@@ -351,6 +364,8 @@
     const setAll = value => {
       for (const key of Object.keys(DEFAULTS)) storage[key] = value;
       forceRender();
+      refreshComposer();
+      refreshTimers.push(setTimeout(refreshComposer, 100));
     };
 
     return React.createElement(
@@ -452,7 +467,7 @@
             marginTop: 14,
           },
         },
-        "Changes apply on the next composer render. If a button does not update immediately, leave and reopen the chat.",
+        "Changes should apply immediately. Composer Cleaner also refreshes the current chat automatically after Discord starts.",
       ),
     );
   }
@@ -470,14 +485,21 @@
       if (!results.some(Boolean)) {
         throw new Error("Discord composer components were not found");
       }
+
+      refreshComposer();
+      scheduleRefreshes();
     },
 
     onUnload() {
+      clearRefreshes();
+
       while (patches.length) {
         try {
           patches.pop()?.();
         } catch {}
       }
+
+      refreshComposer();
     },
 
     settings: Settings,
