@@ -95,7 +95,7 @@
 
     try {
       actions.selectChannel({
-        guildId,
+        guildId: null,
         channelId: null,
         skipMessageFetch: true,
         opensChannel: false,
