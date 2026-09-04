@@ -2,7 +2,12 @@
   "use strict";
 
   const { before, after } = vendetta.patcher;
-  const { find, findByName, findByStoreName } = vendetta.metro;
+  const {
+    find,
+    findByName,
+    findByProps,
+    findByStoreName,
+  } = vendetta.metro;
   const { React, ReactNative: RN } = vendetta.metro.common;
   const { storage } = vendetta.plugin;
 
@@ -18,37 +23,66 @@
     hideThread: false,
   };
 
-  const refreshStores = [
-    "SelectedChannelStore",
-    "SelectedGuildStore",
-    "DraftStore",
-  ]
-    .map(name => {
-      try {
-        return findByStoreName?.(name);
-      } catch {
-        return null;
-      }
-    })
-    .filter(Boolean);
-
   function ensureDefaults() {
     for (const [key, value] of Object.entries(DEFAULTS)) {
       storage[key] ??= value;
     }
   }
 
-  function refreshComposer() {
-    for (const store of refreshStores) {
-      try {
-        store?.emitChange?.();
-      } catch {}
+  function getStore(name) {
+    try {
+      return findByStoreName?.(name) ?? null;
+    } catch {
+      return null;
     }
   }
 
-  function scheduleRefreshes() {
-    for (const delay of [250, 1000, 2500]) {
-      refreshTimers.push(setTimeout(refreshComposer, delay));
+  function getChannelActions() {
+    try {
+      return (
+        findByProps(
+          "selectChannel",
+          "selectPrivateChannel",
+          "selectVoiceChannel",
+        )
+        ?? findByProps("selectChannel", "selectPrivateChannel")
+        ?? null
+      );
+    } catch {
+      return null;
+    }
+  }
+
+  function reselectCurrentChannel() {
+    const selectedChannelStore = getStore("SelectedChannelStore");
+    const selectedGuildStore = getStore("SelectedGuildStore");
+    const actions = getChannelActions();
+
+    if (!selectedChannelStore || !actions?.selectChannel) return false;
+
+    let channelId = null;
+    let guildId = null;
+
+    try {
+      channelId = selectedChannelStore.getChannelId?.() ?? null;
+    } catch {}
+
+    if (!channelId) return false;
+
+    try {
+      guildId = selectedGuildStore?.getGuildId?.() ?? null;
+    } catch {}
+
+    try {
+      actions.selectChannel({
+        guildId,
+        channelId,
+        skipMessageFetch: true,
+        opensChannel: false,
+      });
+      return true;
+    } catch {
+      return false;
     }
   }
 
@@ -58,6 +92,26 @@
         clearTimeout(refreshTimers.pop());
       } catch {}
     }
+  }
+
+  function scheduleComposerRemount() {
+    clearRefreshes();
+
+    for (const delay of [300, 1000, 2500, 5000]) {
+      refreshTimers.push(
+        setTimeout(() => {
+          reselectCurrentChannel();
+        }, delay),
+      );
+    }
+  }
+
+  function applyComposerChange() {
+    refreshTimers.push(
+      setTimeout(() => {
+        reselectCurrentChannel();
+      }, 0),
+    );
   }
 
   function findRenderedComponent(name) {
@@ -187,10 +241,15 @@
     if (Array.isArray(node)) {
       return node
         .map(cleanNativeTree)
-        .filter(child => child !== null && child !== undefined && child !== false);
+        .filter(child => (
+          child !== null
+          && child !== undefined
+          && child !== false
+        ));
     }
 
     if (!React.isValidElement(node)) return node;
+
     if (matchesNativeControl(node)) return null;
 
     const children = node.props?.children;
@@ -223,7 +282,11 @@
           props.canStartThreads = false;
         }
       }),
-      after(found.method, found.target, (_, result) => cleanNativeTree(result)),
+      after(
+        found.method,
+        found.target,
+        (_, result) => cleanNativeTree(result),
+      ),
     );
 
     return true;
@@ -238,11 +301,18 @@
         const props = args?.[0];
         if (!props || typeof props !== "object") return;
 
-        if (storage.hideGift === true && "shouldShowGiftButton" in props) {
+        if (
+          storage.hideGift === true
+          && "shouldShowGiftButton" in props
+        ) {
           props.shouldShowGiftButton = false;
         }
       }),
-      after(found.method, found.target, (_, result) => cleanNativeTree(result)),
+      after(
+        found.method,
+        found.target,
+        (_, result) => cleanNativeTree(result),
+      ),
     );
 
     return true;
@@ -264,20 +334,22 @@
           props.canSendVoiceMessage = false;
         }
       }),
-      after(found.method, found.target, (_, result) => cleanNativeTree(result)),
+      after(
+        found.method,
+        found.target,
+        (_, result) => cleanNativeTree(result),
+      ),
     );
 
     return true;
   }
 
-  function setOption(key, value, forceRender) {
-    storage[key] = value;
-    forceRender();
-    refreshComposer();
-    refreshTimers.push(setTimeout(refreshComposer, 100));
-  }
-
-  function SettingRow({ title, description, storageKey, forceRender }) {
+  function SettingRow({
+    title,
+    description,
+    storageKey,
+    forceRender,
+  }) {
     return React.createElement(
       RN.View,
       {
@@ -311,7 +383,11 @@
         ),
         React.createElement(RN.Switch, {
           value: storage[storageKey] === true,
-          onValueChange: value => setOption(storageKey, value, forceRender),
+          onValueChange: value => {
+            storage[storageKey] = value;
+            forceRender();
+            applyComposerChange();
+          },
         }),
       ),
       React.createElement(
@@ -362,10 +438,11 @@
     const [, forceRender] = React.useReducer(value => value + 1, 0);
 
     const setAll = value => {
-      for (const key of Object.keys(DEFAULTS)) storage[key] = value;
+      for (const key of Object.keys(DEFAULTS)) {
+        storage[key] = value;
+      }
       forceRender();
-      refreshComposer();
-      refreshTimers.push(setTimeout(refreshComposer, 100));
+      applyComposerChange();
     };
 
     return React.createElement(
@@ -400,7 +477,6 @@
         },
         "Hide Discord's native message composer buttons. Third-party composer buttons are left alone.",
       ),
-
       React.createElement(SettingRow, {
         title: "Hide attachment / media (+)",
         description: "Removes Discord's attachment/media button from the composer.",
@@ -437,7 +513,6 @@
         storageKey: "hideThread",
         forceRender,
       }),
-
       React.createElement(
         RN.View,
         {
@@ -456,19 +531,6 @@
           onPress: () => setAll(false),
         }),
       ),
-
-      React.createElement(
-        RN.Text,
-        {
-          style: {
-            color: "#80848E",
-            fontSize: 12,
-            lineHeight: 17,
-            marginTop: 14,
-          },
-        },
-        "Changes should apply immediately. Composer Cleaner also refreshes the current chat automatically after Discord starts.",
-      ),
     );
   }
 
@@ -486,8 +548,7 @@
         throw new Error("Discord composer components were not found");
       }
 
-      refreshComposer();
-      scheduleRefreshes();
+      scheduleComposerRemount();
     },
 
     onUnload() {
@@ -498,8 +559,6 @@
           patches.pop()?.();
         } catch {}
       }
-
-      refreshComposer();
     },
 
     settings: Settings,
