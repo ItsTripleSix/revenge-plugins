@@ -29,6 +29,30 @@ https://raw.githubusercontent.com/ItsTripleSix/revenge-plugins/main/plugins/sile
 
 Open the plugin's settings page in Revenge to customize its appearance and behavior.
 
+### Composer Cleaner
+
+Separately controls Discord's native message-composer buttons without modifying Silent Typing or other third-party composer plugins.
+
+Current controls:
+
+- Attachment / media (`+`)
+- Gift / Nitro
+- Emoji / Expression picker
+- Voice-message microphone
+- Apps & Commands
+- New Thread
+- Quick **Hide all** / **Show all** controls
+
+All buttons remain visible by default until you choose what to hide.
+
+Install in **Discord Settings → Revenge → Plugins → +**:
+
+```text
+https://raw.githubusercontent.com/ItsTripleSix/revenge-plugins/main/plugins/composer-cleaner/
+```
+
+Composer Cleaner only removes controls that it can identify as Discord-native composer controls. Unknown third-party buttons are preserved so it can coexist with plugins such as Silent Typing.
+
 ## Compatibility
 
 These plugins target Revenge Classic's Vendetta-compatible plugin loader. Discord updates can change internal modules and occasionally require plugin fixes.
