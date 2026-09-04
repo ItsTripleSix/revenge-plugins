@@ -2,12 +2,22 @@
   "use strict";
 
   const { before, after } = vendetta.patcher;
-  const { find, findByName, findByProps, findByStoreName } = vendetta.metro;
+  const { find, findByName } = vendetta.metro;
   const { React, ReactNative: RN } = vendetta.metro.common;
+  const { getAssetIDByName } = vendetta.ui.assets;
   const { storage } = vendetta.plugin;
 
   const patches = [];
-  const timers = [];
+
+  const Toasts =
+    vendetta.ui?.toasts
+    ?? (() => {
+      try {
+        return vendetta.metro.findByProps("showToast");
+      } catch {
+        return null;
+      }
+    })();
 
   const DEFAULTS = {
     hideAttachment: false,
@@ -24,106 +34,15 @@
     }
   }
 
-  function getStore(name) {
+  function showToast(message) {
     try {
-      return findByStoreName?.(name) ?? null;
-    } catch {
-      return null;
-    }
-  }
-
-  function getCurrentSelection() {
-    const selectedChannelStore = getStore("SelectedChannelStore");
-    const selectedGuildStore = getStore("SelectedGuildStore");
-
-    if (!selectedChannelStore) return null;
-
-    let guildId = null;
-    let channelId = null;
-
-    try {
-      guildId = selectedGuildStore?.getGuildId?.() ?? null;
+      Toasts?.showToast?.(
+        message,
+        getAssetIDByName("TuneIcon")
+          ?? getAssetIDByName("SettingsIcon")
+          ?? getAssetIDByName("ChatIcon"),
+      );
     } catch {}
-
-    try {
-      channelId = selectedChannelStore.getCurrentlySelectedChannelId?.(guildId) ?? null;
-    } catch {}
-
-    if (!channelId) {
-      try {
-        channelId =
-          selectedChannelStore.getChannelId?.(guildId, false)
-          ?? selectedChannelStore.getChannelId?.()
-          ?? null;
-      } catch {}
-    }
-
-    if (!channelId) return null;
-    return { guildId, channelId };
-  }
-
-  function refreshGuildComposerRoute() {
-    const selection = getCurrentSelection();
-    if (!selection) return false;
-
-    const { guildId, channelId } = selection;
-    if (!guildId) return true;
-
-    let routing = null;
-    try {
-      routing = findByProps("transitionToGuild");
-    } catch {}
-
-    const guildChannelStore = getStore("GuildChannelStore");
-    if (!routing?.transitionToGuild || !guildChannelStore) return false;
-
-    let channelIds = [];
-    try {
-      channelIds = guildChannelStore.getSelectableChannelIds?.(guildId) ?? [];
-    } catch {}
-
-    const alternateChannelId = channelIds.find(
-      id => id && id !== channelId,
-    );
-
-    if (!alternateChannelId) return false;
-
-    try {
-      routing.transitionToGuild(guildId, alternateChannelId);
-    } catch {
-      return false;
-    }
-
-    timers.push(
-      setTimeout(() => {
-        try {
-          routing.transitionToGuild(guildId, channelId);
-        } catch {}
-      }, 120),
-    );
-
-    return true;
-  }
-
-  function clearTimers() {
-    while (timers.length) {
-      try {
-        clearTimeout(timers.pop());
-      } catch {}
-    }
-  }
-
-  function scheduleStartupRefresh(attempt = 0) {
-    const delays = [600, 1200, 2500, 5000];
-    if (attempt >= delays.length) return;
-
-    timers.push(
-      setTimeout(() => {
-        if (!refreshGuildComposerRoute()) {
-          scheduleStartupRefresh(attempt + 1);
-        }
-      }, delays[attempt]),
-    );
   }
 
   function findRenderedComponent(name) {
@@ -161,7 +80,7 @@
     const type = element.type;
     const icon = props.IconComponent ?? props.iconComponent ?? props.Icon;
 
-    return [
+    const parts = [
       props.accessibilityLabel,
       props.accessibilityHint,
       props.label,
@@ -172,7 +91,9 @@
       typeof type === "function" ? type.name : null,
       icon?.displayName,
       icon?.name,
-    ]
+    ];
+
+    return parts
       .filter(value => typeof value === "string" && value.length)
       .join(" ")
       .toLowerCase();
@@ -180,6 +101,7 @@
 
   function matchesNativeControl(element) {
     const description = describeElement(element);
+
     if (!description) return false;
 
     if (
@@ -189,7 +111,9 @@
         || description.includes("mediakeyboardbuttonicon")
         || description.includes("attachmenticon")
       )
-    ) return true;
+    ) {
+      return true;
+    }
 
     if (
       storage.hideGift === true
@@ -198,7 +122,9 @@
         || description.includes("chatinputactionbuttongift")
         || description.includes("gifticon")
       )
-    ) return true;
+    ) {
+      return true;
+    }
 
     if (
       storage.hideEmoji === true
@@ -207,7 +133,9 @@
         || description.includes("expressionpicker")
         || description.includes("smiley")
       )
-    ) return true;
+    ) {
+      return true;
+    }
 
     if (
       storage.hideMicrophone === true
@@ -215,7 +143,9 @@
         /\bvoice message\b|\bmicrophone\b|\brecord voice\b/.test(description)
         || description.includes("microphoneicon")
       )
-    ) return true;
+    ) {
+      return true;
+    }
 
     if (
       storage.hideApps === true
@@ -224,7 +154,9 @@
         || description.includes("chatinputactionbuttonapps")
         || description.includes("appsicon")
       )
-    ) return true;
+    ) {
+      return true;
+    }
 
     if (
       storage.hideThread === true
@@ -232,7 +164,9 @@
         /\bnew thread\b|\bstart thread\b|\bthread\b/.test(description)
         || description.includes("threadplusicon")
       )
-    ) return true;
+    ) {
+      return true;
+    }
 
     return false;
   }
@@ -245,6 +179,9 @@
     }
 
     if (!React.isValidElement(node)) return node;
+
+    // Only remove elements we can positively identify as Discord native controls.
+    // Unknown/custom composer buttons are preserved for compatibility with other plugins.
     if (matchesNativeControl(node)) return null;
 
     const children = node.props?.children;
@@ -412,9 +349,7 @@
     const [, forceRender] = React.useReducer(value => value + 1, 0);
 
     const setAll = value => {
-      for (const key of Object.keys(DEFAULTS)) {
-        storage[key] = value;
-      }
+      for (const key of Object.keys(DEFAULTS)) storage[key] = value;
       forceRender();
     };
 
@@ -450,6 +385,7 @@
         },
         "Hide Discord's native message composer buttons. Third-party composer buttons are left alone.",
       ),
+
       React.createElement(SettingRow, {
         title: "Hide attachment / media (+)",
         description: "Removes Discord's attachment/media button from the composer.",
@@ -486,6 +422,7 @@
         storageKey: "hideThread",
         forceRender,
       }),
+
       React.createElement(
         RN.View,
         {
@@ -504,6 +441,19 @@
           onPress: () => setAll(false),
         }),
       ),
+
+      React.createElement(
+        RN.Text,
+        {
+          style: {
+            color: "#80848E",
+            fontSize: 12,
+            lineHeight: 17,
+            marginTop: 14,
+          },
+        },
+        "Changes apply on the next composer render. If a button does not update immediately, leave and reopen the chat.",
+      ),
     );
   }
 
@@ -520,13 +470,9 @@
       if (!results.some(Boolean)) {
         throw new Error("Discord composer components were not found");
       }
-
-      scheduleStartupRefresh();
     },
 
     onUnload() {
-      clearTimers();
-
       while (patches.length) {
         try {
           patches.pop()?.();
