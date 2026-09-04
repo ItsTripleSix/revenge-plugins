@@ -1,0 +1,14 @@
+{
+  "name": "Composer Cleaner",
+  "description": "Hide Discord's native message composer buttons without touching third-party composer plugins.",
+  "authors": [
+    {
+      "name": "ItsTripleSix"
+    }
+  ],
+  "main": "index.js",
+  "hash": "a11f804a0a3ee8c245be13fd3c0997c451f62bf459011ac1797f5b16c09ab521",
+  "vendetta": {
+    "icon": "ChatIcon"
+  }
+}
