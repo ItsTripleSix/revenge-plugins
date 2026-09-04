@@ -8,14 +8,16 @@ Custom Revenge Classic plugins focused on privacy, quality-of-life, and restorin
 
 Adds an Aliucord-style silent-typing toggle directly to Discord's mobile message composer.
 
-- **Visible / normal typing:** plain keyboard icon.
-- **Invisible / silent typing:** same keyboard icon with a configurable slash over it.
+- **Visible / normal typing:** plain keyboard icon using its own configurable color.
+- **Invisible / silent typing:** keyboard uses a separate configurable active color.
+- Optional independently colored slash appears over the keyboard while silent typing is enabled.
 - Tapping the icon shows a confirmation popup telling you whether typing is now Visible or Invisible.
-- Keyboard and slash colors are independently configurable.
-- Both colors support independent alpha/transparency values.
-- Color swatches open Discord's native color picker when available.
+- Separate color controls for visible keyboard, silent keyboard, and slash.
+- Each color supports independent alpha/transparency.
+- Color swatches and buttons open Discord's native visual color picker.
 - Live settings preview shows both Visible and Invisible states.
-- Composer button, slash indicator, confirmation popup, and button side are configurable.
+- Composer button is placed on the **left by default**, with an option to move it to the right.
+- Composer button, slash indicator, confirmation popup, and placement are configurable.
 - Silent mode blocks Discord's outgoing typing event; normal mode restores Discord's original typing behavior.
 - Settings and silent state persist between restarts.
 
