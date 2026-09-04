@@ -181,6 +181,35 @@
     }
   }
 
+  function forceLiveComposerRefresh(ref = liveChatInput) {
+    if (!ref) return false;
+
+    try {
+      if (
+        typeof ref.hideSideActions === "function"
+        && typeof ref.showSideActions === "function"
+      ) {
+        ref.hideSideActions();
+
+        const showAgain = () => {
+          try {
+            ref.showSideActions();
+          } catch {}
+        };
+
+        if (typeof requestAnimationFrame === "function") {
+          requestAnimationFrame(showAgain);
+        } else {
+          setTimeout(showAgain, 0);
+        }
+
+        return true;
+      }
+    } catch {}
+
+    return refreshLiveComposer(ref);
+  }
+
   function scheduleLiveRefresh(ref) {
     if (!ref) return;
 
@@ -203,8 +232,11 @@
     setTimeout(() => refreshLiveComposer(ref), 0);
   }
 
-  function refreshComposerSoon() {
-    setTimeout(() => refreshLiveComposer(), 0);
+  function refreshComposerSoon(force = false) {
+    setTimeout(() => {
+      if (force) forceLiveComposerRefresh();
+      else refreshLiveComposer();
+    }, 0);
   }
 
   function patchChatInputGuard() {
@@ -855,7 +887,7 @@
             storage.buttonSide = value ? "right" : "left";
             forceRender();
             notifyRefresh();
-            refreshComposerSoon();
+            refreshComposerSoon(true);
           },
         }),
       }),
@@ -902,7 +934,7 @@
             storage.buttonSide = "left";
             forceRender();
             notifyRefresh();
-            refreshComposerSoon();
+            refreshComposerSoon(true);
           },
           style: {
             marginTop: 22,
