@@ -2,10 +2,18 @@
   "use strict";
 
   const { after, instead } = vendetta.patcher;
-  const { findByProps } = vendetta.metro;
+  const { find, findAll, findByProps } = vendetta.metro;
   const { React, ReactNative: RN } = vendetta.metro.common;
 
   const KEY = "__itsTripleSixHiddenChannelsRuntime";
+  const RENDER_LEVEL = {
+    CANNOT_SHOW: 1,
+    DO_NOT_SHOW: 2,
+    COLLAPSED: 3,
+    SHOW: 4,
+  };
+  const LEGACY_GATEWAY_CAPABILITIES = 1734655;
+  const OBFUSCATION_CACHE_KEY = "private_channel_obfuscation";
 
   try { globalThis[KEY]?.cleanup?.(); } catch {}
 
@@ -13,13 +21,25 @@
     patches: [],
     patched: {},
     active: true,
+    permissionStore: null,
     realCan: null,
     viewChannel: null,
     channelStore: null,
+    channelListModule: null,
+    originalRenderLevels: new Map(),
+    touchedCategories: new Set(),
+    touchedGuildLists: new Set(),
     cleanup: null,
   };
 
   globalThis[KEY] = runtime;
+
+  function addPatch(flag, unpatch) {
+    if (typeof unpatch !== "function") return false;
+    runtime.patches.push(unpatch);
+    runtime.patched[flag] = true;
+    return true;
+  }
 
   function resolveViewChannelPermission() {
     if (runtime.viewChannel != null) return runtime.viewChannel;
@@ -37,6 +57,17 @@
     return runtime.viewChannel;
   }
 
+  function resolvePermissionStore() {
+    if (runtime.permissionStore) return runtime.permissionStore;
+
+    const permissions = findByProps("getChannelPermissions", "can");
+    if (!permissions?.can) return null;
+
+    runtime.permissionStore = permissions;
+    runtime.realCan = permissions.can.bind(permissions);
+    return permissions;
+  }
+
   function resolveChannelStore() {
     if (runtime.channelStore) return runtime.channelStore;
 
@@ -45,6 +76,24 @@
       ?? findByProps("getChannel");
 
     return runtime.channelStore;
+  }
+
+  function resolveChannelListModule() {
+    if (runtime.channelListModule) return runtime.channelListModule;
+
+    try {
+      runtime.channelListModule = find(module => (
+        typeof module?.default === "function"
+        && typeof module.default?.prototype?.getGuild === "function"
+        && typeof module.default?.prototype?.getGuildChannelRowsOnly === "function"
+        && module?.ChannelListSections != null
+        && module?.SECTION_INDEX_FIRST_NAMED_CATEGORY != null
+      ));
+    } catch {
+      runtime.channelListModule = null;
+    }
+
+    return runtime.channelListModule;
   }
 
   function getGuildId(channel) {
@@ -68,9 +117,13 @@
 
   function resolveChannel(channelOrId) {
     if (!channelOrId) return null;
+
     if (typeof channelOrId === "object") {
       if (channelOrId.channel && typeof channelOrId.channel === "object") {
         return channelOrId.channel;
+      }
+      if (channelOrId.record && typeof channelOrId.record === "object") {
+        return channelOrId.record;
       }
       return channelOrId;
     }
@@ -86,6 +139,8 @@
     const channel = resolveChannel(channelOrId);
     const viewChannel = resolveViewChannelPermission();
 
+    resolvePermissionStore();
+
     if (!runtime.realCan || viewChannel == null || !isGuildChannel(channel)) {
       return false;
     }
@@ -95,11 +150,6 @@
     } catch {
       return false;
     }
-  }
-
-  function samePermission(left, right) {
-    if (left === right) return true;
-    try { return String(left) === String(right); } catch { return false; }
   }
 
   function snowflakeDate(id) {
@@ -132,6 +182,9 @@
 
   function looksObfuscated(channel) {
     const name = String(channel?.name ?? "").trim().toLowerCase();
+    try {
+      if (channel?.isObfuscated?.()) return true;
+    } catch {}
     return !name || name === "no access" || name === "no-access";
   }
 
@@ -161,7 +214,7 @@
     if (looksObfuscated(channel)) {
       lines.push(
         "",
-        "Discord still has obfuscated metadata cached. Open Hidden Channels settings and use Refresh channel metadata.",
+        "Discord is still holding obfuscated metadata. Use Reload real channel metadata in this plugin's settings.",
       );
     }
 
@@ -170,7 +223,30 @@
     } catch {}
   }
 
-  function reconnectGateway() {
+  function clearObfuscationCache() {
+    try {
+      const storageModule = find(module => (
+        module?.Storage
+        && typeof module.Storage.get === "function"
+        && typeof module.Storage.set === "function"
+        && typeof module.Storage.remove === "function"
+      ));
+      storageModule?.Storage?.remove?.(OBFUSCATION_CACHE_KEY);
+    } catch {}
+  }
+
+  function forceObfuscationOffNow() {
+    clearObfuscationCache();
+
+    try {
+      const controller = findByProps("setUseChannelObfuscation");
+      controller?.setUseChannelObfuscation?.(false);
+    } catch {}
+  }
+
+  function reconnectGatewayFresh() {
+    forceObfuscationOffNow();
+
     const gateway =
       findByProps("getSocket", "isConnected")
       ?? findByProps("getSocket", "isConnectedOrOverlay");
@@ -178,7 +254,7 @@
     let socket = null;
     try { socket = gateway?.getSocket?.(); } catch {}
 
-    if (!socket || typeof socket.close !== "function" || typeof socket.connect !== "function") {
+    if (!socket) {
       try {
         RN.Alert.alert(
           "Hidden Channels",
@@ -189,11 +265,27 @@
     }
 
     try {
-      socket.close();
-      socket.connect();
+      // A normal reconnect may RESUME the old session, which keeps the old
+      // negotiated channel-obfuscation capability. Clear the resumable state
+      // so the next connection performs a fresh IDENTIFY.
+      socket.sessionId = null;
+      socket.seq = 0;
+      socket.setResumeUrl?.(null);
+
+      if (typeof socket._handleReconnect === "function") {
+        socket._handleReconnect();
+      } else if (typeof socket.close === "function" && typeof socket.connect === "function") {
+        socket.close();
+        setTimeout(() => {
+          try { socket.connect(); } catch {}
+        }, 250);
+      } else {
+        throw new Error("No reconnect method");
+      }
+
       RN.Alert.alert(
         "Hidden Channels",
-        "Discord is reconnecting and requesting channel metadata with private-channel obfuscation disabled. The channel list should refresh shortly.",
+        "Discord is performing a fresh gateway connection with private-channel obfuscation disabled. Give the server list a few seconds to reload.",
       );
     } catch {
       try {
@@ -205,51 +297,120 @@
     }
   }
 
-  function addPatch(flag, unpatch) {
-    if (typeof unpatch !== "function") return false;
-    runtime.patches.push(unpatch);
-    runtime.patched[flag] = true;
+  function revealCategory(category) {
+    if (!category?.channels || typeof category.channels !== "object") return false;
+
+    let changed = false;
+    const targetLevel = category.isCollapsed === true
+      ? RENDER_LEVEL.COLLAPSED
+      : RENDER_LEVEL.SHOW;
+
+    for (const item of Object.values(category.channels)) {
+      const record = item?.record;
+      if (!record || !isHidden(record)) continue;
+
+      if (!runtime.originalRenderLevels.has(item)) {
+        runtime.originalRenderLevels.set(item, item.renderLevel);
+      }
+
+      if (item.renderLevel !== targetLevel) {
+        item.renderLevel = targetLevel;
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      category.shownChannelIds = null;
+      runtime.touchedCategories.add(category);
+    }
+
+    return changed;
+  }
+
+  function revealGuildList(guildList) {
+    if (!guildList || typeof guildList !== "object") return guildList;
+
+    const categories = [];
+    if (guildList.noParentCategory) categories.push(guildList.noParentCategory);
+    if (guildList.categories && typeof guildList.categories === "object") {
+      categories.push(...Object.values(guildList.categories));
+    }
+
+    let changed = false;
+    for (const category of categories) {
+      changed = revealCategory(category) || changed;
+    }
+
+    if (changed) {
+      guildList.rows = null;
+      guildList.sections = null;
+      guildList.allChannelsById = null;
+      guildList.firstVoiceChannel = undefined;
+      if (typeof guildList.version === "number") guildList.version += 1;
+      runtime.touchedGuildLists.add(guildList);
+    }
+
+    return guildList;
+  }
+
+  function patchChannelListState() {
+    if (runtime.patched.channelListState) return true;
+
+    const module = resolveChannelListModule();
+    const proto = module?.default?.prototype;
+    if (!proto?.getGuild || !proto?.getGuildChannelRowsOnly) return false;
+
+    const unpatchGuild = after("getGuild", proto, (_args, result) => {
+      if (!runtime.active) return result;
+      return revealGuildList(result);
+    });
+
+    const unpatchRows = after("getGuildChannelRowsOnly", proto, (_args, result) => {
+      if (!runtime.active) return result;
+      return revealGuildList(result);
+    });
+
+    runtime.patches.push(unpatchGuild, unpatchRows);
+    runtime.patched.channelListState = true;
     return true;
   }
 
   function patchPrivateChannelObfuscation() {
     let changed = false;
 
-    const privateHiding =
-      findByProps(
-        "isChannelMetadataObfuscationEnabled",
-        "isChannelMetadataIntegrityCheckEnabled",
-      )
-      ?? findByProps("isChannelMetadataObfuscationEnabled");
+    try {
+      const modules = findAll(module => (
+        typeof module?.isChannelMetadataObfuscationEnabled === "function"
+        || typeof module?.isChannelMetadataIntegrityCheckEnabled === "function"
+        || typeof module?.getCachedPrivateChannelObfuscation === "function"
+      ));
 
-    if (privateHiding) {
-      for (const method of [
-        "isChannelMetadataObfuscationEnabled",
-        "isChannelMetadataIntegrityCheckEnabled",
-        "getCachedPrivateChannelObfuscation",
-      ]) {
-        const flag = `private-${method}`;
-        if (runtime.patched[flag] || typeof privateHiding[method] !== "function") continue;
-        changed = addPatch(
-          flag,
-          instead(method, privateHiding, () => false),
-        ) || changed;
-      }
-    }
+      modules.forEach((module, index) => {
+        if (!module) return;
+
+        for (const method of [
+          "isChannelMetadataObfuscationEnabled",
+          "isChannelMetadataIntegrityCheckEnabled",
+          "getCachedPrivateChannelObfuscation",
+        ]) {
+          if (typeof module[method] !== "function") continue;
+          const flag = `private-${index}-${method}`;
+          if (runtime.patched[flag]) continue;
+
+          changed = addPatch(
+            flag,
+            instead(method, module, () => false),
+          ) || changed;
+        }
+      });
+    } catch {}
 
     if (!runtime.patched.gatewayCapabilities) {
       const gatewayCapabilities = findByProps("getClientCapabilities");
       if (gatewayCapabilities?.getClientCapabilities) {
         changed = addPatch(
           "gatewayCapabilities",
-          instead("getClientCapabilities", gatewayCapabilities, (args, original) => {
-            if (!runtime.active) return original(...args);
-            const options = args?.[0];
-            const nextOptions = options && typeof options === "object"
-              ? { ...options, useChannelObfuscation: false }
-              : { useChannelObfuscation: false };
-            return original(nextOptions, ...args.slice(1));
-          }),
+          instead("getClientCapabilities", gatewayCapabilities, () => LEGACY_GATEWAY_CAPABILITIES),
         ) || changed;
       }
     }
@@ -264,36 +425,11 @@
             return original(false, ...args.slice(1));
           }),
         ) || changed;
-
-        try { controller.setUseChannelObfuscation(false); } catch {}
       }
     }
 
+    forceObfuscationOffNow();
     return changed;
-  }
-
-  function patchPermissions() {
-    if (runtime.patched.permissions) return true;
-
-    const permissions = findByProps("getChannelPermissions", "can");
-    const viewChannel = resolveViewChannelPermission();
-    if (!permissions?.can || viewChannel == null) return false;
-
-    runtime.realCan ??= permissions.can.bind(permissions);
-
-    return addPatch(
-      "permissions",
-      after("can", permissions, (args, result) => {
-        if (!runtime.active || result === true) return result;
-
-        const [permission, context] = args;
-        if (samePermission(permission, viewChannel) && isGuildChannel(context)) {
-          return true;
-        }
-
-        return result;
-      }),
-    );
   }
 
   function getChannelItemTarget() {
@@ -409,11 +545,12 @@
 
   function install() {
     resolveChannelStore();
+    resolvePermissionStore();
     resolveViewChannelPermission();
 
     return [
       patchPrivateChannelObfuscation(),
-      patchPermissions(),
+      patchChannelListState(),
       patchChannelItems(),
       patchNavigation(),
       patchMessageFetching(),
@@ -446,12 +583,12 @@
             marginBottom: 16,
           },
         },
-        "Hidden server channels are shown with Discord's locked styling. Opening one shows metadata instead of attempting to fetch messages.",
+        "Hidden channels are inserted into Discord's normal channel list while Discord's real VIEW_CHANNEL permission result stays untouched. This keeps the native locked styling and avoids pretending you can read the channel.",
       ),
       React.createElement(
         RN.Pressable,
         {
-          onPress: reconnectGateway,
+          onPress: reconnectGatewayFresh,
           style: {
             minHeight: 46,
             borderRadius: 8,
@@ -464,7 +601,7 @@
         React.createElement(
           RN.Text,
           { style: { color: "#FFFFFF", fontSize: 15, fontWeight: "700" } },
-          "Refresh channel metadata",
+          "Reload real channel metadata",
         ),
       ),
       React.createElement(
@@ -477,18 +614,40 @@
             marginTop: 10,
           },
         },
-        "Use this if a hidden channel still says No Access. It reconnects Discord's gateway once; it does not switch channels or send a message. Avoid refreshing during an active voice call.",
+        "Use this if channels still say No Access. It forces one fresh Discord gateway IDENTIFY with private-channel obfuscation disabled. It does not switch channels, type, or send anything. Avoid using it during an active voice call.",
       ),
     );
   }
 
   function cleanup() {
     runtime.active = false;
+
     while (runtime.patches.length) {
       try { runtime.patches.pop()?.(); } catch {}
     }
+
+    for (const [item, originalLevel] of runtime.originalRenderLevels) {
+      try { item.renderLevel = originalLevel; } catch {}
+    }
+    for (const category of runtime.touchedCategories) {
+      try { category.shownChannelIds = null; } catch {}
+    }
+    for (const guildList of runtime.touchedGuildLists) {
+      try {
+        guildList.rows = null;
+        guildList.sections = null;
+        guildList.allChannelsById = null;
+        guildList.firstVoiceChannel = undefined;
+        if (typeof guildList.version === "number") guildList.version += 1;
+      } catch {}
+    }
+
+    runtime.originalRenderLevels.clear();
+    runtime.touchedCategories.clear();
+    runtime.touchedGuildLists.clear();
     runtime.patched = {};
     runtime.realCan = null;
+    runtime.permissionStore = null;
 
     if (globalThis[KEY] === runtime) {
       try { delete globalThis[KEY]; } catch { globalThis[KEY] = null; }
@@ -503,8 +662,8 @@
       runtime.active = true;
       const current = install();
 
-      if (![...early, ...current].some(Boolean) || !runtime.patched.permissions) {
-        throw new Error("Discord channel permission modules were not found");
+      if (![...early, ...current].some(Boolean) || !runtime.patched.channelListState) {
+        throw new Error("Discord's channel-list modules were not found");
       }
     },
     onUnload: cleanup,
