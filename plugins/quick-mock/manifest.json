@@ -6,8 +6,8 @@
       "name": "ItsTripleSix"
     }
   ],
-  "main": "index.js",
-  "hash": "6c3e2dc06848d01e09d952f75260b73ed97f58ab",
+  "main": "index-v2.js",
+  "hash": "ab89667a3a780418db921158699641ecc1777b1d",
   "vendetta": {
     "icon": "PencilIcon"
   }
