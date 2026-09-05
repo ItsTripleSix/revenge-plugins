@@ -2,20 +2,20 @@ name: Theme Toolkit v0.5.2 builder
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
 
 permissions:
   contents: write
 
 jobs:
   build:
-    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Patch Theme Toolkit
-        shell: python
         run: |
+          python3 <<'PY'
           from pathlib import Path
           import hashlib, json
 
@@ -44,7 +44,7 @@ jobs:
 
   function patchMentionHighlights() {'''),
               ('Theme Toolkit v0.5.1', 'Theme Toolkit v0.5.2'),
-              ('Mention highlights now support animated color modes and attention effects. Animation only refreshes while an actual mentioned message is being rendered, then idles automatically when no mention is visible.', 'Animated mention highlights now force only mentioned message rows to refresh while visible, bypassing Discord\'s cached row data. The timer still idles automatically when no mention is visible.'),
+              ('Mention highlights now support animated color modes and attention effects. Animation only refreshes while an actual mentioned message is being rendered, then idles automatically when no mention is visible.', "Animated mention highlights now force only mentioned message rows to refresh while visible, bypassing Discord's cached row data. The timer still idles automatically when no mention is visible."),
               ('unpatchMentions = patchMentionHighlights();\n      syncMentionAnimationState();', 'unpatchMentionRowRefresh = patchMentionRowRefresh();\n      unpatchMentions = patchMentionHighlights();\n      syncMentionAnimationState();'),
               ('try { unpatchMentions?.(); } catch {}\n      unpatchFolder = null;', 'try { unpatchMentions?.(); } catch {}\n      try { unpatchMentionRowRefresh?.(); } catch {}\n      unpatchFolder = null;'),
               ('unpatchMentions = null;\n      mentionAnimationEnabled = false;', 'unpatchMentions = null;\n      unpatchMentionRowRefresh = null;\n      mentionAnimationEnabled = false;'),
@@ -57,7 +57,7 @@ jobs:
 
           out_path.write_text(text)
           raw = text.encode()
-          blob_sha = hashlib.sha1(f'blob {len(raw)}\\0'.encode() + raw).hexdigest()
+          blob_sha = hashlib.sha1(b'blob ' + str(len(raw)).encode() + b'\x00' + raw).hexdigest()
 
           manifest_path = Path('plugins/theme-toolkit/manifest.json')
           manifest = json.loads(manifest_path.read_text())
@@ -66,10 +66,11 @@ jobs:
           manifest_path.write_text(json.dumps(manifest, indent=2) + '\n')
 
           Path('.github/workflows/theme-toolkit-v052.yml').unlink()
+          PY
       - name: Commit v0.5.2
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add plugins/theme-toolkit/index-v052.js plugins/theme-toolkit/manifest.json .github/workflows/theme-toolkit-v052.yml
+          git add -A
           git commit -m 'Fix live mention animation row refresh'
           git push
