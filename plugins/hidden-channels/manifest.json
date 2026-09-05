@@ -1,0 +1,14 @@
+{
+  "name": "Hidden Channels",
+  "description": "Show hidden server channel names and metadata while preventing message access attempts.",
+  "authors": [
+    {
+      "name": "ItsTripleSix"
+    }
+  ],
+  "main": "index.js",
+  "hash": "84cb928cdcbd6fbd2fee8fa98aeb78f8172c7c60",
+  "vendetta": {
+    "icon": "LockIcon"
+  }
+}
