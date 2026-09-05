@@ -1,0 +1,117 @@
+name: Theme Toolkit v0.5.3 builder
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Theme Toolkit v0.5.3
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib, json
+
+          src_path = Path('plugins/theme-toolkit/index-v052.js')
+          out_path = Path('plugins/theme-toolkit/index-v053.js')
+          text = src_path.read_text()
+
+          replacements = [
+              (
+                  'const ChatManagerModule = (() => { try { return findByProps("MockChatManager"); } catch { return null; } })();',
+                  'const ChatManagerModule = (() => { try { return findByProps("MockChatManager"); } catch { return null; } })();\n  const MarkupUtilsModule = (() => { try { return findByProps("combineAndInjectMentionRule", "createReactRules"); } catch { return null; } })();'
+              ),
+              (
+                  'let unpatchMentionRowRefresh = null;\n  let appStateSubscription = null;',
+                  'let unpatchMentionRowRefresh = null;\n  let unpatchInlineMentionProbe = null;\n  let appStateSubscription = null;'
+              ),
+              (
+                  '  function patchMentionRowRefresh() {',
+                  '''  function InlineMentionProbe({ original, node, output, state }) {
+    let element;
+    try { element = original(node, output, state); } catch { return null; }
+    if (!element?.props) return element;
+    const baseStyles = element.props.styles ?? {};
+    const mentionBase = flattened(baseStyles.mention);
+    const nextStyles = {
+      ...baseStyles,
+      mention: {
+        ...mentionBase,
+        color: "#00FFFF",
+        backgroundColor: "#FF00FF",
+        borderRadius: mentionBase.borderRadius ?? 3,
+        paddingHorizontal: mentionBase.paddingHorizontal ?? 2,
+      },
+    };
+    const nextState = { ...(element.props.state ?? state ?? {}), textColor: "#00FFFF" };
+    try { return React.cloneElement(element, { styles: nextStyles, state: nextState }); }
+    catch { return element; }
+  }
+
+  function patchInlineMentionProbe() {
+    let rules;
+    try { rules = MarkupUtilsModule?.defaultRules; } catch { rules = null; }
+    const rule = rules?.mention;
+    if (!rule || typeof rule.react !== "function") return null;
+    const original = rule.react;
+    const wrapped = (node, output, state) => React.createElement(InlineMentionProbe, {
+      original, node, output, state, key: state?.key,
+    });
+    try { rule.react = wrapped; } catch { return null; }
+    return () => {
+      try { if (rule.react === wrapped) rule.react = original; } catch {}
+    };
+  }
+
+  function patchMentionRowRefresh() {'''
+              ),
+              ('Theme Toolkit v0.5.2', 'Theme Toolkit v0.5.3'),
+              (
+                  'Animated mention highlights now force only mentioned message rows to refresh while visible, bypassing Discord\'s cached row data. The timer still idles automatically when no mention is visible.',
+                  'Inline @mention renderer probe: user/role mention tags are temporarily forced to cyan text on a magenta pill so we can verify the exact renderer before adding animation controls.'
+              ),
+              (
+                  'unpatchFolderBG = patchExpandedFolderBackground();\n      unpatchMentionRowRefresh = patchMentionRowRefresh();',
+                  'unpatchFolderBG = patchExpandedFolderBackground();\n      unpatchInlineMentionProbe = patchInlineMentionProbe();\n      unpatchMentionRowRefresh = patchMentionRowRefresh();'
+              ),
+              (
+                  'try { unpatchMentions?.(); } catch {}\n      try { unpatchMentionRowRefresh?.(); } catch {}',
+                  'try { unpatchMentions?.(); } catch {}\n      try { unpatchMentionRowRefresh?.(); } catch {}\n      try { unpatchInlineMentionProbe?.(); } catch {}'
+              ),
+              (
+                  'unpatchMentionRowRefresh = null;\n      mentionAnimationEnabled = false;',
+                  'unpatchMentionRowRefresh = null;\n      unpatchInlineMentionProbe = null;\n      mentionAnimationEnabled = false;'
+              ),
+          ]
+
+          for old, new in replacements:
+              if old not in text:
+                  raise SystemExit(f'Missing expected source fragment: {old[:120]!r}')
+              text = text.replace(old, new, 1)
+
+          out_path.write_text(text)
+          raw = text.encode()
+          blob_sha = hashlib.sha1(f'blob {len(raw)}\\0'.encode() + raw).hexdigest()
+
+          manifest_path = Path('plugins/theme-toolkit/manifest.json')
+          manifest = json.loads(manifest_path.read_text())
+          manifest['main'] = 'index-v053.js'
+          manifest['hash'] = blob_sha
+          manifest_path.write_text(json.dumps(manifest, indent=2) + '\n')
+
+          Path('.github/workflows/theme-toolkit-v053.yml').unlink()
+          PY
+      - name: Commit v0.5.3
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'Probe inline mention renderer'
+          git push
