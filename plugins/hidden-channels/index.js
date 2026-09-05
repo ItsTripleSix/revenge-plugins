@@ -3,7 +3,7 @@
 
   const { after, instead } = vendetta.patcher;
   const { findByProps } = vendetta.metro;
-  const { ReactNative: RN } = vendetta.metro.common;
+  const { React, ReactNative: RN } = vendetta.metro.common;
 
   const KEY = "__itsTripleSixHiddenChannelsRuntime";
 
@@ -161,13 +161,48 @@
     if (looksObfuscated(channel)) {
       lines.push(
         "",
-        "Discord still has obfuscated metadata cached. Force-close Discord and reopen it once with this plugin enabled.",
+        "Discord still has obfuscated metadata cached. Open Hidden Channels settings and use Refresh channel metadata.",
       );
     }
 
     try {
       RN.Alert.alert("Hidden Channel", lines.filter(value => value != null).join("\n"));
     } catch {}
+  }
+
+  function reconnectGateway() {
+    const gateway =
+      findByProps("getSocket", "isConnected")
+      ?? findByProps("getSocket", "isConnectedOrOverlay");
+
+    let socket = null;
+    try { socket = gateway?.getSocket?.(); } catch {}
+
+    if (!socket || typeof socket.close !== "function" || typeof socket.connect !== "function") {
+      try {
+        RN.Alert.alert(
+          "Hidden Channels",
+          "Discord's gateway connection could not be found. Force-close Discord and reopen it instead.",
+        );
+      } catch {}
+      return;
+    }
+
+    try {
+      socket.close();
+      socket.connect();
+      RN.Alert.alert(
+        "Hidden Channels",
+        "Discord is reconnecting and requesting channel metadata with private-channel obfuscation disabled. The channel list should refresh shortly.",
+      );
+    } catch {
+      try {
+        RN.Alert.alert(
+          "Hidden Channels",
+          "The gateway could not be refreshed. Force-close Discord and reopen it instead.",
+        );
+      } catch {}
+    }
   }
 
   function addPatch(flag, unpatch) {
@@ -229,6 +264,8 @@
             return original(false, ...args.slice(1));
           }),
         ) || changed;
+
+        try { controller.setUseChannelObfuscation(false); } catch {}
       }
     }
 
@@ -367,6 +404,68 @@
     ];
   }
 
+  function Settings() {
+    return React.createElement(
+      RN.ScrollView,
+      { contentContainerStyle: { padding: 16, paddingBottom: 32 } },
+      React.createElement(
+        RN.Text,
+        {
+          style: {
+            color: "#F2F3F5",
+            fontSize: 20,
+            fontWeight: "700",
+            marginBottom: 8,
+          },
+        },
+        "Hidden Channels",
+      ),
+      React.createElement(
+        RN.Text,
+        {
+          style: {
+            color: "#B5BAC1",
+            fontSize: 14,
+            lineHeight: 20,
+            marginBottom: 16,
+          },
+        },
+        "Hidden server channels are shown with Discord's locked styling. Opening one shows metadata instead of attempting to fetch messages.",
+      ),
+      React.createElement(
+        RN.Pressable,
+        {
+          onPress: reconnectGateway,
+          style: {
+            minHeight: 46,
+            borderRadius: 8,
+            alignItems: "center",
+            justifyContent: "center",
+            backgroundColor: "#5865F2",
+            paddingHorizontal: 14,
+          },
+        },
+        React.createElement(
+          RN.Text,
+          { style: { color: "#FFFFFF", fontSize: 15, fontWeight: "700" } },
+          "Refresh channel metadata",
+        ),
+      ),
+      React.createElement(
+        RN.Text,
+        {
+          style: {
+            color: "#80848E",
+            fontSize: 12,
+            lineHeight: 17,
+            marginTop: 10,
+          },
+        },
+        "Use this if a hidden channel still says No Access. It reconnects Discord's gateway once; it does not switch channels or send a message. Avoid refreshing during an active voice call.",
+      ),
+    );
+  }
+
   function cleanup() {
     runtime.active = false;
     while (runtime.patches.length) {
@@ -393,5 +492,6 @@
       }
     },
     onUnload: cleanup,
+    settings: Settings,
   };
 })();
