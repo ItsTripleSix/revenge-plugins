@@ -333,14 +333,30 @@
         const channel = resolveChannel(row);
         if (!row || !isHidden(channel)) return original(...args);
 
-        const nextRow = {
-          ...row,
-          locked: true,
-          unread: false,
-          onPress: () => showHiddenInfo(channel),
+        const previous = {
+          locked: row.locked,
+          unread: row.unread,
+          onPress: row.onPress,
         };
-        const nextProps = { ...props, channel: nextRow };
-        return original(nextProps, ...args.slice(1));
+        const hadLocked = Object.prototype.hasOwnProperty.call(row, "locked");
+        const hadUnread = Object.prototype.hasOwnProperty.call(row, "unread");
+        const hadOnPress = Object.prototype.hasOwnProperty.call(row, "onPress");
+
+        try {
+          row.locked = true;
+          row.unread = false;
+          row.onPress = () => showHiddenInfo(channel);
+          return original(...args);
+        } finally {
+          try {
+            if (hadLocked) row.locked = previous.locked;
+            else delete row.locked;
+            if (hadUnread) row.unread = previous.unread;
+            else delete row.unread;
+            if (hadOnPress) row.onPress = previous.onPress;
+            else delete row.onPress;
+          } catch {}
+        }
       }),
     );
   }
