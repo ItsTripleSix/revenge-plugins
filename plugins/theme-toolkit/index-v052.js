@@ -176,7 +176,7 @@
   function multiplyAlpha(value, factor, fallback = 1) {
     const hex = colorValue(value);
     if (!hex) return null;
-    return withAlpha(hex, Math.max(0, Math.min(1, colorAlpha(hex, fallback) * factor));
+    return withAlpha(hex, Math.max(0, Math.min(1, colorAlpha(hex, fallback) * factor)));
   }
   function normalizePattern(value, fallback = "solid") {
     return ["solid", "dashed", "dotted", "segmented"].includes(value) ? value : fallback;
