@@ -1,13 +1,13 @@
 {
   "name": "Hidden Channels",
-  "description": "Show hidden server channel names and metadata while preventing message access attempts.",
+  "description": "Show hidden server channel names and metadata while keeping Discord's real channel permissions intact.",
   "authors": [
     {
       "name": "ItsTripleSix"
     }
   ],
   "main": "index.js",
-  "hash": "97f509d9520348a81933411aa01c05e45a63622f",
+  "hash": "260677a1d2e73a269fe09b71a2441ee27e57eb43",
   "vendetta": {
     "icon": "LockIcon"
   }
