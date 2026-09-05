@@ -9,9 +9,11 @@
   const showToast = vendetta.ui?.toasts?.showToast;
   const getAssetIDByName = vendetta.ui?.assets?.getAssetIDByName;
 
-  // v0.2: clean independent closed/open folder outlines.
-  // Animation/color engines (pulse, glow, chase, RGB, gradients) come next
-  // after this outline layer is confirmed stable on-device.
+  // v0.2.1: folder theming foundation.
+  // Important default behavior:
+  // - Active theme + Theme/Auto: Toolkit enhances/overrides folder rendering.
+  // - No active theme + untouched defaults: Toolkit is visually inert.
+  // - Explicit Toolkit/custom choices still work without a theme.
 
   const GuildFolderModule = (() => {
     try { return findByProps("GuildsBarGuildFolderBG"); }
@@ -44,29 +46,28 @@
   })();
 
   const DEFAULTS = {
-    // Theme mode still means Theme Toolkit is in control: it reads the active
-    // theme when one exists, then visually applies those values itself.
-    // With no theme active it falls back to the Toolkit defaults below.
     folderColorSource: "theme", // theme | toolkit | discord
     folderCoverMode: "theme",   // theme | preview | folder
 
-    folderBackground: "#000000",
-    folderAccent: "#FFFFFF",
+    // Null custom colors are intentional. With no theme selected, Toolkit
+    // should not silently invent black/white styling for the user.
+    folderBackground: null,
+    folderAccent: null,
 
     closedOutlineEnabled: true,
     closedOutlineColorMode: "theme", // theme | custom (rgb/gradient later)
-    closedOutlineColor: "#FFFFFF",
+    closedOutlineColor: null,
     closedOutlinePattern: "theme",   // theme | solid | dashed | dotted | segmented
     closedOutlineWidth: "theme",     // theme | 1 | 2 | 3
 
     openOutlineEnabled: true,
     openOutlineColorMode: "theme",
-    openOutlineColor: "#FFFFFF",
+    openOutlineColor: null,
     openOutlinePattern: "theme",
     openOutlineWidth: "theme",
   };
 
-  // Migrate v0.1 settings so existing installs keep the same intent.
+  // Keep v0.1 intent where possible.
   if (storage.closedOutlineEnabled == null && storage.folderOutline != null) {
     storage.closedOutlineEnabled = !!storage.folderOutline;
   }
@@ -88,8 +89,18 @@
     storage.openOutlineWidth = Math.max(1, Math.min(3, Number(storage.folderBorderWidth) || 1));
   }
 
+  // v0.2 originally seeded black/white custom colors. Clear only those exact
+  // old defaults once so an existing install also gets the new neutral state.
+  if (!storage.neutralNoThemeDefaultsV021) {
+    if (String(storage.folderBackground ?? "").toUpperCase() === "#000000") storage.folderBackground = null;
+    if (String(storage.folderAccent ?? "").toUpperCase() === "#FFFFFF") storage.folderAccent = null;
+    if (String(storage.closedOutlineColor ?? "").toUpperCase() === "#FFFFFF") storage.closedOutlineColor = null;
+    if (String(storage.openOutlineColor ?? "").toUpperCase() === "#FFFFFF") storage.openOutlineColor = null;
+    storage.neutralNoThemeDefaultsV021 = true;
+  }
+
   for (const [key, value] of Object.entries(DEFAULTS)) {
-    if (storage[key] == null) storage[key] = value;
+    if (storage[key] === undefined) storage[key] = value;
   }
 
   let unpatchFolder = null;
@@ -103,6 +114,7 @@
     if (Array.isArray(value)) value = value.find(x => typeof x === "string");
     if (typeof value !== "string") return null;
     let out = value.trim();
+    if (!out) return null;
     if (!out.startsWith("#")) out = `#${out}`;
     if (!/^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$/.test(out)) return null;
     return out.toUpperCase();
@@ -132,6 +144,15 @@
     return currentTheme()?.data ?? null;
   }
 
+  function inactiveOutline() {
+    return {
+      enabled: false,
+      color: null,
+      width: 1,
+      pattern: "solid",
+    };
+  }
+
   function themeOutlineConfig(extra, state, fallbackColor) {
     const specific = extra?.[state] ?? {};
     const color = colorValue(specific.outlineColor)
@@ -156,7 +177,23 @@
   }
 
   function themeFolderConfig() {
-    const data = currentThemeData() ?? {};
+    const theme = currentTheme();
+    const data = theme?.data ?? null;
+
+    // No theme means no automatic appearance at all. This is deliberately
+    // different from falling back to a black/white pseudo-theme.
+    if (!data) {
+      return {
+        hasTheme: false,
+        hasMetadata: false,
+        background: null,
+        accent: null,
+        cover: "preview",
+        closed: inactiveOutline(),
+        open: inactiveOutline(),
+      };
+    }
+
     const semantic = data.semanticColors ?? {};
     const raw = data.rawColors ?? {};
     const extra = data.themeToolkit?.folders ?? {};
@@ -175,12 +212,13 @@
       ?? "#FFFFFF";
 
     return {
+      hasTheme: true,
+      hasMetadata: !!data.themeToolkit,
       background,
       accent,
       cover: extra.cover === "folder" ? "folder" : "preview",
       closed: themeOutlineConfig(extra, "closed", accent),
       open: themeOutlineConfig(extra, "open", accent),
-      hasMetadata: !!data.themeToolkit,
     };
   }
 
@@ -197,55 +235,73 @@
     return null;
   }
 
-  function effectiveOutline(themeOutline, state) {
+  function effectiveOutline(themeOutline, state, hasTheme) {
     const prefix = state === "open" ? "open" : "closed";
-    const enabled = !!storage[`${prefix}OutlineEnabled`];
+    const enabledSetting = !!storage[`${prefix}OutlineEnabled`];
     const colorMode = storage[`${prefix}OutlineColorMode`];
     const requestedPattern = storage[`${prefix}OutlinePattern`];
     const requestedWidth = storage[`${prefix}OutlineWidth`];
 
+    const customColor = colorValue(storage[`${prefix}OutlineColor`]);
+    const color = colorMode === "custom"
+      ? customColor
+      : (hasTheme ? themeOutline.color : null);
+
+    // Theme/Auto with no active theme must be a true no-op. Custom becomes
+    // active only after the user actually supplies a color.
+    const enabled = colorMode === "custom"
+      ? enabledSetting && !!customColor
+      : enabledSetting && hasTheme && themeOutline.enabled !== false && !!themeOutline.color;
+
     return {
-      enabled: enabled && themeOutline.enabled !== false,
-      color: colorMode === "custom"
-        ? (colorValue(storage[`${prefix}OutlineColor`]) ?? themeOutline.color)
-        : themeOutline.color,
+      enabled,
+      color,
       pattern: requestedPattern === "theme"
-        ? themeOutline.pattern
-        : normalizePattern(requestedPattern, themeOutline.pattern),
+        ? (hasTheme ? themeOutline.pattern : "solid")
+        : normalizePattern(requestedPattern, hasTheme ? themeOutline.pattern : "solid"),
       width: requestedWidth === "theme"
-        ? themeOutline.width
-        : normalizeWidth(requestedWidth, themeOutline.width),
+        ? (hasTheme ? themeOutline.width : 1)
+        : normalizeWidth(requestedWidth, hasTheme ? themeOutline.width : 1),
     };
   }
 
   function effectiveFolderConfig(folder) {
     const theme = themeFolderConfig();
-    const source = storage.folderColorSource;
+    const requestedSource = storage.folderColorSource;
 
+    let source = requestedSource;
     let background = null;
     let accent = null;
 
-    if (source === "theme") {
-      background = theme.background;
-      accent = theme.accent;
-    } else if (source === "toolkit") {
-      background = colorValue(storage.folderBackground) ?? DEFAULTS.folderBackground;
-      accent = colorValue(storage.folderAccent) ?? DEFAULTS.folderAccent;
+    if (requestedSource === "theme") {
+      if (theme.hasTheme) {
+        background = theme.background;
+        accent = theme.accent;
+      } else {
+        // Neutral default: behave exactly like Discord until the user chooses
+        // an explicit Toolkit override.
+        source = "discord";
+      }
+    } else if (requestedSource === "toolkit") {
+      background = colorValue(storage.folderBackground);
+      accent = colorValue(storage.folderAccent);
     } else {
-      // Discord mode leaves Discord's saved fill/tint untouched.
-      accent = discordFolderColor(folder) ?? theme.accent;
+      source = "discord";
     }
 
     const requestedCover = storage.folderCoverMode;
-    const cover = requestedCover === "theme" ? theme.cover : requestedCover;
+    const cover = requestedCover === "theme"
+      ? (theme.hasTheme ? theme.cover : "preview")
+      : requestedCover;
 
     return {
       source,
       cover: cover === "folder" ? "folder" : "preview",
       background,
       accent,
-      closedOutline: effectiveOutline(theme.closed, "closed"),
-      openOutline: effectiveOutline(theme.open, "open"),
+      coverAccent: accent ?? discordFolderColor(folder) ?? theme.accent ?? "#FFFFFF",
+      closedOutline: effectiveOutline(theme.closed, "closed", theme.hasTheme),
+      openOutline: effectiveOutline(theme.open, "open", theme.hasTheme),
     };
   }
 
@@ -367,23 +423,21 @@
           const item = transition.props.items?.[0];
           const expanded = item?.type === "icon" || !!folder?.expanded;
 
-          // Expanded folder icon tint is independent from collapsed preview fill.
-          if (expanded && item?.type === "icon" && cfg.source !== "discord") {
+          // Only override Discord's expanded icon tint when an actual theme or
+          // explicit Toolkit accent exists.
+          if (expanded && item?.type === "icon" && cfg.source !== "discord" && cfg.accent) {
             item.tintStyle = [item.tintStyle, { tintColor: cfg.accent }];
           }
 
-          // Optional collapsed cover replacement. Theme mode defaults to normal
-          // server previews unless the active theme explicitly requests a folder.
+          // Explicit cover selection works even without a theme. Theme/Auto
+          // with no theme simply resolves to Discord's normal 2x2 preview.
           if (!expanded && cfg.cover === "folder") {
             transition.props.items = [{
               type: "icon",
-              tintStyle: { tintColor: cfg.accent },
+              tintStyle: { tintColor: cfg.coverAccent },
             }];
           }
 
-          // The v0.1 border was applied to Discord's own preview tile and got
-          // clipped by its layout. v0.2 adds a separate overlay child instead,
-          // so solid/dashed/dotted/segmented outlines are clean and independent.
           const originalWrap = transition.props.wrapChildren;
           transition.props.wrapChildren = child => {
             const wrapped = originalWrap(child);
@@ -536,22 +590,22 @@
       }));
     }
 
-    function ColorInput({ labelText, storageKey, fallbackKey }) {
+    function ColorInput({ labelText, storageKey }) {
       return React.createElement(RN.View, { style: { gap: 6 } },
         React.createElement(RN.Text, { style: label }, labelText),
         React.createElement(RN.TextInput, {
           value: String(storage[storageKey] ?? ""),
           autoCapitalize: "characters",
           autoCorrect: false,
-          placeholder: "#FFFFFF",
+          placeholder: "Unset — leave Discord/theme alone",
           placeholderTextColor: "#6D6F78",
           onChangeText(value) {
             storage[storageKey] = value;
             forceUpdate();
           },
           onEndEditing() {
-            const valid = colorValue(storage[storageKey]);
-            storage[storageKey] = valid ?? DEFAULTS[fallbackKey ?? storageKey] ?? "#FFFFFF";
+            const raw = String(storage[storageKey] ?? "").trim();
+            storage[storageKey] = raw ? colorValue(raw) : null;
             forceUpdate();
             refreshFolderUI();
           },
@@ -629,24 +683,24 @@
     }
 
     const activeThemeText = theme
-      ? `${theme.data?.name ?? "Unnamed theme"}${themeCfg.hasMetadata ? " • Toolkit metadata detected" : " • automatic fallback"}`
-      : "No custom Revenge theme selected • Toolkit fallback is active";
+      ? `${theme.data?.name ?? "Unnamed theme"}${themeCfg.hasMetadata ? " • Toolkit metadata detected" : " • automatic theme mapping"}`
+      : "No custom Revenge theme selected • Toolkit defaults are visually idle";
 
     return React.createElement(RN.ScrollView, {
       contentContainerStyle: page,
     },
       React.createElement(RN.View, { style: card },
-        React.createElement(RN.Text, { style: title }, "Theme Toolkit v0.2"),
+        React.createElement(RN.Text, { style: title }, "Theme Toolkit v0.2.1"),
         React.createElement(RN.Text, { style: text }, activeThemeText),
         React.createElement(RN.Text, { style: text },
-          "Toolkit takes visual control by default. Theme / Auto reads the active theme when available, works with third-party themes through automatic fallbacks, and uses Toolkit defaults when no theme is enabled."
+          "With a theme active, Theme / Auto enhances it and can override Discord's folder styling. With no theme active, the untouched defaults do nothing at all; custom colors start unset so you decide what Toolkit changes."
         ),
       ),
 
       React.createElement(RN.View, { style: card },
         React.createElement(RN.Text, { style: title }, "Folder colors"),
         React.createElement(RN.Text, { style: text },
-          "Theme / Auto lets Toolkit derive the look from the active theme and then apply it itself. Toolkit uses your palette below. Discord stops overriding folder fill/tint and uses Discord's saved folder colors instead."
+          "Theme / Auto follows the active theme. If no theme is selected, it leaves Discord untouched. Toolkit applies only the custom palette values you set below. Discord always preserves Discord's own folder styling."
         ),
         React.createElement(Choice, {
           value: storage.folderColorSource,
@@ -662,7 +716,7 @@
       React.createElement(RN.View, { style: card },
         React.createElement(RN.Text, { style: title }, "Collapsed folder cover"),
         React.createElement(RN.Text, { style: text },
-          "Theme follows the active theme preference. Server previews keeps Discord's normal 2x2 server icons. Folder icon replaces the preview with a folder icon."
+          "Theme follows the active theme preference. With no theme, Theme means Discord's normal 2x2 preview. You can still explicitly choose Server previews or Folder icon."
         ),
         React.createElement(Choice, {
           value: storage.folderCoverMode,
@@ -680,7 +734,9 @@
 
       React.createElement(RN.View, { style: card },
         React.createElement(RN.Text, { style: title }, "Toolkit folder palette"),
-        React.createElement(RN.Text, { style: text }, "Used when Folder colors is set to Toolkit."),
+        React.createElement(RN.Text, { style: text },
+          "Used only when Folder colors is set to Toolkit. Blank means no override for that value."
+        ),
         React.createElement(ColorInput, { labelText: "Background", storageKey: "folderBackground" }),
         React.createElement(ColorInput, { labelText: "Folder icon / accent", storageKey: "folderAccent" }),
       ),
@@ -688,7 +744,7 @@
       React.createElement(RN.View, { style: card },
         React.createElement(RN.Text, { style: title }, "Animation engine — next"),
         React.createElement(RN.Text, { style: text },
-          "Once the new outline layer is confirmed clean, the same separate Closed/Open sections will gain Pulse, Breathe, Glow, Chase, RGB cycle, and custom gradient modes with speed and glow controls."
+          "Closed and Open will separately support Pulse, Breathe, Glow, Chase, selected-color animation, RGB cycle, and custom gradients with speed and glow controls."
         ),
       ),
 
