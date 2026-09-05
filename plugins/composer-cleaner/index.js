@@ -6,7 +6,7 @@
   const { React, ReactNative: RN } = vendetta.metro.common;
   const { storage } = vendetta.plugin;
 
-  const RUNTIME_KEY = "__itsTripleSixComposerCleanerRuntime";
+  const KEY = "__itsTripleSixComposerCleanerRuntime";
   const DEFAULTS = {
     hideAttachment: false,
     hideGift: false,
@@ -16,322 +16,212 @@
     hideThread: false,
   };
 
-  const runtime = globalThis[RUNTIME_KEY] ?? {
+  try { globalThis[KEY]?.cleanup?.(); } catch {}
+
+  const runtime = {
     patches: [],
-    refreshListeners: new Set(),
-    patched: {
-      actions: false,
-      rightActions: false,
-      sendButton: false,
-      guard: false,
-    },
+    listeners: new Set(),
+    patched: {},
     liveChatInput: null,
-    refreshFrame: null,
-    refreshTimer: null,
-    active: false,
+    frame: null,
+    timer: null,
     initialRefreshPending: true,
-    unpatchAll: null,
+    active: true,
+    cleanup: null,
   };
-
-  globalThis[RUNTIME_KEY] = runtime;
-
-  function cancelScheduledRefresh() {
-    try {
-      if (runtime.refreshFrame != null && typeof cancelAnimationFrame === "function") {
-        cancelAnimationFrame(runtime.refreshFrame);
-      }
-    } catch {}
-
-    if (runtime.refreshTimer != null) {
-      try {
-        clearTimeout(runtime.refreshTimer);
-      } catch {}
-    }
-
-    runtime.refreshFrame = null;
-    runtime.refreshTimer = null;
-  }
-
-  function unpatchAll() {
-    cancelScheduledRefresh();
-
-    while (runtime.patches.length) {
-      try {
-        runtime.patches.pop()?.();
-      } catch {}
-    }
-
-    for (const key of Object.keys(runtime.patched)) runtime.patched[key] = false;
-  }
-
-  try {
-    runtime.unpatchAll?.();
-  } catch {}
-  runtime.unpatchAll = unpatchAll;
-  runtime.active = true;
-  runtime.initialRefreshPending = true;
+  globalThis[KEY] = runtime;
 
   function ensureDefaults() {
-    for (const [key, value] of Object.entries(DEFAULTS)) {
-      storage[key] ??= value;
+    for (const [key, value] of Object.entries(DEFAULTS)) storage[key] ??= value;
+  }
+
+  function notify() {
+    for (const listener of runtime.listeners) {
+      try { listener(); } catch {}
     }
   }
 
-  function notifyRefresh() {
-    for (const listener of runtime.refreshListeners) {
-      try {
-        listener();
-      } catch {}
-    }
-  }
-
-  function useCleanerRefresh() {
-    const [, forceRender] = React.useReducer(value => value + 1, 0);
-
+  function useRefresh() {
+    const [, render] = React.useReducer(value => value + 1, 0);
     React.useEffect(() => {
-      runtime.refreshListeners.add(forceRender);
-      return () => runtime.refreshListeners.delete(forceRender);
+      runtime.listeners.add(render);
+      return () => runtime.listeners.delete(render);
     }, []);
   }
 
-  function findRenderedComponent(name) {
+  function findComponent(name) {
     try {
-      const byDisplayName = find(module => module?.type?.displayName === name);
-      if (byDisplayName) return byDisplayName;
+      const found = find(module => (
+        module?.type?.displayName === name
+        || module?.type?.render?.displayName === name
+        || module?.default?.displayName === name
+        || module?.default?.type?.displayName === name
+        || module?.default?.type?.render?.displayName === name
+      ));
+      if (found) return found;
     } catch {}
-
-    try {
-      return findByName(name, false) ?? findByName(name);
-    } catch {
-      return null;
-    }
+    try { return findByName(name, false) ?? findByName(name); } catch { return null; }
   }
 
-  function getRenderTarget(name) {
-    const component = findRenderedComponent(name);
-
-    if (component && typeof component.default === "function") {
-      return { target: component, method: "default" };
-    }
-
-    const target = component?.type ?? component;
-    if (target && typeof target.render === "function") {
-      return { target, method: "render" };
-    }
-
+  function renderTarget(name) {
+    const component = findComponent(name);
+    if (!component) return null;
+    if (typeof component.default === "function") return [component, "default"];
+    if (component.default?.type && typeof component.default.type.render === "function") return [component.default.type, "render"];
+    if (component.default && typeof component.default.render === "function") return [component.default, "render"];
+    const target = component.type ?? component;
+    if (target?.type && typeof target.type.render === "function") return [target.type, "render"];
+    if (target && typeof target.render === "function") return [target, "render"];
     return null;
   }
 
-  function describeElement(element) {
+  function elementName(element) {
     if (!React.isValidElement(element)) return "";
-
-    const props = element.props ?? {};
     const type = element.type;
-    const icon = props.IconComponent ?? props.iconComponent ?? props.Icon;
-
-    return [
-      props.accessibilityLabel,
-      props.accessibilityHint,
-      props.label,
-      props.title,
-      props.testID,
-      props.nativeID,
-      typeof type === "string" ? type : type?.displayName,
-      typeof type === "function" ? type.name : null,
-      icon?.displayName,
-      icon?.name,
-    ]
-      .filter(value => typeof value === "string" && value.length)
-      .join(" ")
-      .toLowerCase();
+    return type?.displayName
+      ?? type?.type?.displayName
+      ?? type?.render?.displayName
+      ?? type?.type?.render?.displayName
+      ?? (typeof type === "function" ? type.name : "")
+      ?? "";
   }
 
-  function matchesNativeControl(element) {
-    const description = describeElement(element);
-    if (!description) return false;
+  function describe(element) {
+    if (!React.isValidElement(element)) return "";
+    const props = element.props ?? {};
+    const icon = props.IconComponent ?? props.iconComponent ?? props.Icon;
+    return [
+      props.accessibilityLabel, props.accessibilityHint, props.label, props.title,
+      props.testID, props.nativeID, elementName(element), icon?.displayName, icon?.name,
+    ].filter(value => typeof value === "string" && value.length).join(" ").toLowerCase();
+  }
 
-    if (
-      storage.hideAttachment === true
-      && (
-        /\battachment\b|\bupload\b|\bphotos?\b|\bmedia\b/.test(description)
-        || description.includes("mediakeyboardbuttonicon")
-        || description.includes("attachmenticon")
-      )
-    ) return true;
-
-    if (
-      storage.hideGift === true
-      && (
-        /\bgift\b|\bnitro\b/.test(description)
-        || description.includes("chatinputactionbuttongift")
-        || description.includes("gifticon")
-      )
-    ) return true;
-
-    if (
-      storage.hideEmoji === true
-      && (
-        /\bemoji\b|\bexpression\b/.test(description)
-        || description.includes("expressionpicker")
-        || description.includes("smiley")
-      )
-    ) return true;
-
-    if (
-      storage.hideMicrophone === true
-      && (
-        /\bvoice message\b|\bmicrophone\b|\brecord voice\b/.test(description)
-        || description.includes("microphoneicon")
-      )
-    ) return true;
-
-    if (
-      storage.hideApps === true
-      && (
-        /\bapps?\b|\bcommands?\b|\bapp launcher\b/.test(description)
-        || description.includes("chatinputactionbuttonapps")
-        || description.includes("appsicon")
-      )
-    ) return true;
-
-    if (
-      storage.hideThread === true
-      && (
-        /\bnew thread\b|\bstart thread\b|\bthread\b/.test(description)
-        || description.includes("threadplusicon")
-      )
-    ) return true;
-
+  function shouldHide(element) {
+    const text = describe(element);
+    if (!text) return false;
+    if (storage.hideAttachment && (/\battachment\b|\bupload\b|\bphotos?\b|\bmedia\b/.test(text) || text.includes("mediakeyboardbuttonicon") || text.includes("attachmenticon"))) return true;
+    if (storage.hideGift && (/\bgift\b|\bnitro\b/.test(text) || text.includes("chatinputactionbuttongift") || text.includes("gifticon"))) return true;
+    if (storage.hideEmoji && (/\bemoji\b|\bexpression\b/.test(text) || text.includes("expressionpicker") || text.includes("smiley"))) return true;
+    if (storage.hideMicrophone && (/\bvoice message\b|\bmicrophone\b|\brecord voice\b/.test(text) || text.includes("microphoneicon") || text.includes("voice-message-button"))) return true;
+    if (storage.hideApps && (/\bapps?\b|\bcommands?\b|\bapp launcher\b/.test(text) || text.includes("chatinputactionbuttonapps") || text.includes("appsicon"))) return true;
+    if (storage.hideThread && (/\bnew thread\b|\bstart thread\b|\bthread\b/.test(text) || text.includes("threadplusicon"))) return true;
     return false;
   }
 
-  function cleanNativeTree(node) {
-    if (Array.isArray(node)) {
-      return node
-        .map(cleanNativeTree)
-        .filter(child => child !== null && child !== undefined && child !== false);
-    }
-
+  function cleanTree(node) {
+    if (Array.isArray(node)) return node.map(cleanTree).filter(Boolean);
     if (!React.isValidElement(node)) return node;
-    if (matchesNativeControl(node)) return null;
-
+    if (shouldHide(node)) return null;
     const children = node.props?.children;
     if (children === undefined) return node;
+    const next = cleanTree(children);
+    if (next === children) return node;
+    try { return React.cloneElement(node, undefined, next); } catch { return node; }
+  }
 
-    const cleanedChildren = cleanNativeTree(children);
-    if (cleanedChildren === children) return node;
+  function transformTree(node) {
+    if (Array.isArray(node)) return node.map(transformTree);
+    if (!React.isValidElement(node)) return node;
 
+    const name = elementName(node);
+    const overrides = {};
+
+    if (name === "ChatInputActions") {
+      if (storage.hideApps) overrides.isAppLauncherEnabled = false;
+      if (storage.hideThread) overrides.canStartThreads = false;
+    } else if (name === "ChatInputRightActions" && storage.hideGift) {
+      overrides.shouldShowGiftButton = false;
+    } else if (name === "ChatInputSendButton" && storage.hideMicrophone) {
+      overrides.canSendVoiceMessage = false;
+    }
+
+    const children = node.props?.children;
+    const next = children === undefined ? children : transformTree(children);
+    const changed = next !== children;
+
+    if (!Object.keys(overrides).length && !changed) return node;
     try {
-      return React.cloneElement(node, undefined, cleanedChildren);
+      return changed
+        ? React.cloneElement(node, overrides, next)
+        : React.cloneElement(node, overrides);
     } catch {
       return node;
     }
   }
 
+  function CleanerRoot({ result }) {
+    useRefresh();
+    return runtime.active ? transformTree(result) : result;
+  }
+
   function CleanerOutput({ result }) {
-    useCleanerRefresh();
-    if (runtime.active !== true) return result;
-    return cleanNativeTree(result);
+    useRefresh();
+    return runtime.active ? cleanTree(result) : result;
   }
 
-  function wrapCleanResult(result, key) {
-    return React.createElement(CleanerOutput, {
-      key: `composer-cleaner-${key}`,
-      result,
-    });
-  }
-
-  function patchOutput(name, flag) {
+  function patch(name, flag, component) {
     if (runtime.patched[flag]) return true;
-
-    const found = getRenderTarget(name);
+    const found = renderTarget(name);
     if (!found) return false;
-
+    const [target, method] = found;
     runtime.patches.push(
-      after(found.method, found.target, (_, result) => wrapCleanResult(result, flag)),
+      after(method, target, (_, result) =>
+        React.createElement(component, {
+          result,
+          key: `composer-cleaner-${flag}`,
+        }),
+      ),
     );
-
     runtime.patched[flag] = true;
     return true;
   }
 
-  function findInReactTree(node, predicate, seen = new Set(), depth = 0) {
+  function findTree(node, predicate, seen = new Set(), depth = 0) {
     if (node == null || depth > 60) return null;
-
     if (Array.isArray(node)) {
       for (const child of node) {
-        const found = findInReactTree(child, predicate, seen, depth + 1);
+        const found = findTree(child, predicate, seen, depth + 1);
         if (found) return found;
       }
       return null;
     }
-
-    if (typeof node !== "object") return null;
-    if (seen.has(node)) return null;
+    if (typeof node !== "object" || seen.has(node)) return null;
     seen.add(node);
-
-    try {
-      if (predicate(node)) return node;
-    } catch {}
-
-    const children = node.props?.children;
-    if (children !== undefined) {
-      const found = findInReactTree(children, predicate, seen, depth + 1);
-      if (found) return found;
-    }
-
-    return null;
+    try { if (predicate(node)) return node; } catch {}
+    return node.props?.children === undefined
+      ? null
+      : findTree(node.props.children, predicate, seen, depth + 1);
   }
 
-  function forceComposerActionRerender(ref = runtime.liveChatInput) {
-    if (!ref) return false;
-
-    let text = "";
+  function cancelRefresh() {
     try {
-      text = String(ref.getText?.() ?? "");
+      if (runtime.frame != null && typeof cancelAnimationFrame === "function") {
+        cancelAnimationFrame(runtime.frame);
+      }
     } catch {}
-
-    const shouldShowSideActions = text.length === 0;
-    const first = shouldShowSideActions ? "hideSideActions" : "showSideActions";
-    const second = shouldShowSideActions ? "showSideActions" : "hideSideActions";
-
-    if (typeof ref[first] !== "function" || typeof ref[second] !== "function") {
-      return false;
+    if (runtime.timer != null) {
+      try { clearTimeout(runtime.timer); } catch {}
     }
+    runtime.frame = null;
+    runtime.timer = null;
+  }
 
-    cancelScheduledRefresh();
-
-    try {
-      ref[first]();
-    } catch {
-      return false;
-    }
-
-    const finish = () => {
-      runtime.refreshFrame = null;
-      runtime.refreshTimer = null;
-      try {
-        ref[second]();
-      } catch {}
+  function startupRefresh(ref) {
+    if (!ref || typeof ref.showSideActions !== "function") return;
+    cancelRefresh();
+    const run = () => {
+      runtime.frame = null;
+      runtime.timer = null;
+      try { ref.showSideActions(); } catch {}
     };
-
     if (typeof requestAnimationFrame === "function") {
-      runtime.refreshFrame = requestAnimationFrame(finish);
+      runtime.frame = requestAnimationFrame(run);
     } else {
-      runtime.refreshTimer = setTimeout(finish, 0);
+      runtime.timer = setTimeout(run, 0);
     }
-
-    return true;
   }
 
-  function refreshComposerSoon() {
-    setTimeout(() => {
-      notifyRefresh();
-      if (runtime.refreshListeners.size === 0) forceComposerActionRerender();
-    }, 0);
-  }
-
-  function patchChatInputGuard() {
+  function patchGuard() {
     if (runtime.patched.guard) return true;
 
     let wrapper = null;
@@ -339,58 +229,61 @@
       wrapper = findByName("ChatInputGuardWrapper", false)
         ?? findByName("ChatInputGuardWrapper");
     } catch {}
-
     if (!wrapper) return false;
 
     let target = null;
     let method = null;
-
     if (typeof wrapper.default === "function") {
       target = wrapper;
       method = "default";
+    } else if (wrapper.default?.type && typeof wrapper.default.type.render === "function") {
+      target = wrapper.default.type;
+      method = "render";
     } else if (wrapper?.type && typeof wrapper.type.render === "function") {
       target = wrapper.type;
       method = "render";
     }
-
-    if (!target || !method) return false;
+    if (!target) return false;
 
     runtime.patches.push(
       after(method, target, (_, result) => {
-        const node = findInReactTree(
-          result,
-          value => value?.props?.chatInputRef?.current,
-        );
-
+        const node = findTree(result, value => value?.props?.chatInputRef?.current);
         const ref = node?.props?.chatInputRef?.current;
         if (ref) {
           runtime.liveChatInput = ref;
           if (runtime.initialRefreshPending) {
             runtime.initialRefreshPending = false;
-            setTimeout(() => forceComposerActionRerender(ref), 0);
+            startupRefresh(ref);
           }
         }
-
         return result;
       }),
     );
-
     runtime.patched.guard = true;
     return true;
   }
 
-  function installPatches() {
+  function install() {
     ensureDefaults();
-
     return [
-      patchOutput("ChatInputActions", "actions"),
-      patchOutput("ChatInputRightActions", "rightActions"),
-      patchOutput("ChatInputSendButton", "sendButton"),
-      patchChatInputGuard(),
+      patch("ChatInput", "chatInput", CleanerRoot),
+      patch("ChatInputActions", "actions", CleanerOutput),
+      patch("ChatInputRightActions", "rightActions", CleanerOutput),
+      patch("ChatInputSendButton", "sendButton", CleanerOutput),
+      patchGuard(),
     ];
   }
 
-  function SettingRow({ title, description, storageKey, forceRender }) {
+  const rows = [
+    ["Hide attachment / media (+)", "Removes Discord's attachment/media button from the composer.", "hideAttachment"],
+    ["Hide Gift", "Removes Discord's gift/Nitro button.", "hideGift"],
+    ["Hide Emoji / Expression", "Removes the smiley/expression picker button.", "hideEmoji"],
+    ["Hide Microphone", "Removes the voice-message microphone when Discord shows it.", "hideMicrophone"],
+    ["Hide Apps & Commands", "Removes Discord's app/command launcher button where present.", "hideApps"],
+    ["Hide New Thread", "Removes the new-thread composer action where present.", "hideThread"],
+  ];
+
+  function SettingRow({ title, description, storageKey, render }) {
     return React.createElement(
       RN.View,
       {
@@ -426,9 +319,8 @@
           value: storage[storageKey] === true,
           onValueChange: value => {
             storage[storageKey] = value;
-            forceRender();
-            notifyRefresh();
-            if (runtime.refreshListeners.size === 0) forceComposerActionRerender();
+            render();
+            notify();
           },
         }),
       ),
@@ -464,36 +356,23 @@
       },
       React.createElement(
         RN.Text,
-        {
-          style: {
-            color: "#FFFFFF",
-            fontSize: 14,
-            fontWeight: "600",
-          },
-        },
+        { style: { color: "#FFFFFF", fontSize: 14, fontWeight: "600" } },
         label,
       ),
     );
   }
 
   function Settings() {
-    const [, forceRender] = React.useReducer(value => value + 1, 0);
-
+    const [, render] = React.useReducer(value => value + 1, 0);
     const setAll = value => {
       for (const key of Object.keys(DEFAULTS)) storage[key] = value;
-      forceRender();
-      notifyRefresh();
-      if (runtime.refreshListeners.size === 0) forceComposerActionRerender();
+      render();
+      notify();
     };
 
     return React.createElement(
       RN.ScrollView,
-      {
-        contentContainerStyle: {
-          padding: 16,
-          paddingBottom: 32,
-        },
-      },
+      { contentContainerStyle: { padding: 16, paddingBottom: 32 } },
       React.createElement(
         RN.Text,
         {
@@ -518,53 +397,18 @@
         },
         "Hide Discord's native message composer buttons. Third-party composer buttons are left alone.",
       ),
-
-      React.createElement(SettingRow, {
-        title: "Hide attachment / media (+)",
-        description: "Removes Discord's attachment/media button from the composer.",
-        storageKey: "hideAttachment",
-        forceRender,
-      }),
-      React.createElement(SettingRow, {
-        title: "Hide Gift",
-        description: "Removes Discord's gift/Nitro button.",
-        storageKey: "hideGift",
-        forceRender,
-      }),
-      React.createElement(SettingRow, {
-        title: "Hide Emoji / Expression",
-        description: "Removes the smiley/expression picker button.",
-        storageKey: "hideEmoji",
-        forceRender,
-      }),
-      React.createElement(SettingRow, {
-        title: "Hide Microphone",
-        description: "Removes the voice-message microphone when Discord shows it.",
-        storageKey: "hideMicrophone",
-        forceRender,
-      }),
-      React.createElement(SettingRow, {
-        title: "Hide Apps & Commands",
-        description: "Removes Discord's app/command launcher button where present.",
-        storageKey: "hideApps",
-        forceRender,
-      }),
-      React.createElement(SettingRow, {
-        title: "Hide New Thread",
-        description: "Removes the new-thread composer action where present.",
-        storageKey: "hideThread",
-        forceRender,
-      }),
-
+      ...rows.map(([title, description, storageKey]) =>
+        React.createElement(SettingRow, {
+          key: storageKey,
+          title,
+          description,
+          storageKey,
+          render,
+        }),
+      ),
       React.createElement(
         RN.View,
-        {
-          style: {
-            flexDirection: "row",
-            gap: 10,
-            marginTop: 18,
-          },
-        },
+        { style: { flexDirection: "row", gap: 10, marginTop: 18 } },
         React.createElement(ActionButton, {
           label: "Hide all",
           onPress: () => setAll(true),
@@ -574,7 +418,6 @@
           onPress: () => setAll(false),
         }),
       ),
-
       React.createElement(
         RN.Text,
         {
@@ -590,33 +433,33 @@
     );
   }
 
-  ensureDefaults();
-  const earlyResults = installPatches();
+  function cleanup() {
+    runtime.active = false;
+    notify();
+    cancelRefresh();
+    while (runtime.patches.length) {
+      try { runtime.patches.pop()?.(); } catch {}
+    }
+    runtime.patched = {};
+    runtime.liveChatInput = null;
+    if (globalThis[KEY] === runtime) {
+      try { delete globalThis[KEY]; } catch { globalThis[KEY] = null; }
+    }
+  }
+
+  runtime.cleanup = cleanup;
+  const early = install();
 
   return {
     onLoad() {
       runtime.active = true;
-      runtime.initialRefreshPending = true;
-      const results = installPatches();
-
-      notifyRefresh();
-
-      if (![...earlyResults, ...results].some(Boolean)) {
+      const current = install();
+      if (![...early, ...current].some(Boolean)) {
         throw new Error("Discord composer components were not found");
       }
-
-      if (runtime.liveChatInput) {
-        runtime.initialRefreshPending = false;
-        setTimeout(() => forceComposerActionRerender(), 0);
-      }
+      notify();
     },
-
-    onUnload() {
-      runtime.active = false;
-      notifyRefresh();
-      unpatchAll();
-    },
-
+    onUnload: cleanup,
     settings: Settings,
   };
 })()
