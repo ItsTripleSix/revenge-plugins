@@ -1,0 +1,14 @@
+{
+  "name": "Theme Toolkit",
+  "description": "Theme-aware appearance helpers for folders, icons, mentions, wallpapers and other Discord UI that normal themes cannot fully control.",
+  "authors": [
+    {
+      "name": "ItsTripleSix"
+    }
+  ],
+  "main": "index.js",
+  "hash": "PLACEHOLDER",
+  "vendetta": {
+    "icon": "PaintPaletteIcon"
+  }
+}
