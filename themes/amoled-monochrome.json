@@ -1,7 +1,7 @@
 {
   "name": "AMOLED Monochrome",
   "description": "Maximum AMOLED black with white/gray text, borders, and accents. Status colors stay colored for usability.",
-  "version": "1.2",
+  "version": "1.3",
   "authors": [
     {
       "name": "ItsTripleSix"
@@ -40,6 +40,7 @@
     "REDESIGN_ACTIVITY_CARD_BACKGROUND": ["#000000"],
     "REDESIGN_ACTIVITY_CARD_BACKGROUND_PRESSED": ["#0A0A0A"],
     "BG_SURFACE_RAISED": ["#000000"],
+    "GUILD_FOLDER_BACKGROUND": ["#000000"],
 
     "BACKGROUND_ACCENT": ["#111111"],
     "BACKGROUND_BRAND": ["#111111"],
