@@ -1,0 +1,14 @@
+{
+  "name": "Quick Mock",
+  "description": "Quickly mOcK message text with /mock, reply-to-mock, or a long-press message action.",
+  "authors": [
+    {
+      "name": "ItsTripleSix"
+    }
+  ],
+  "main": "index.js",
+  "hash": "6c3e2dc06848d01e09d952f75260b73ed97f58ab",
+  "vendetta": {
+    "icon": "PencilIcon"
+  }
+}
