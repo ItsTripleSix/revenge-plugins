@@ -1,6 +1,6 @@
 # revenge-plugins
 
-Custom Revenge Classic plugins focused on privacy, quality-of-life, and restoring useful Discord features.
+Custom Revenge Classic plugins and themes focused on privacy, quality-of-life, and restoring useful Discord features.
 
 ## Plugins
 
@@ -109,9 +109,30 @@ Install in **Discord Settings → Revenge → Plugins → +**:
 https://raw.githubusercontent.com/ItsTripleSix/revenge-plugins/main/plugins/quick-mock/
 ```
 
+## Themes
+
+### AMOLED Monochrome
+
+A maximum-black OLED theme built around pure black surfaces with white and gray UI accents.
+
+- Uses `#000000` for the main Discord surfaces wherever the current theme system exposes them.
+- White primary text and icons with gray secondary/muted text.
+- White borders and separators at different opacity levels instead of colored accents.
+- White brand/accent styling, including primary branded buttons with black text.
+- White mentions and links to keep the overall interface monochrome.
+- Hover/selected states use subtle translucent white instead of gray background panels where possible.
+- Keeps red, green, yellow, and orange status colors for danger/success/warning states so important UI meaning is not lost.
+- Uses the current Revenge/Vendetta **theme spec 2** format.
+
+Install in **Discord Settings → Revenge → Themes → +** by pasting:
+
+```text
+https://raw.githubusercontent.com/ItsTripleSix/revenge-plugins/main/themes/amoled-monochrome.json
+```
+
 ## Compatibility
 
-These plugins target Revenge Classic's Vendetta-compatible plugin loader. Discord updates can change internal modules and occasionally require plugin fixes.
+These plugins and themes target Revenge Classic's Vendetta-compatible loader. Discord updates can change internal modules and color tokens and occasionally require fixes.
 
 ## License
 
