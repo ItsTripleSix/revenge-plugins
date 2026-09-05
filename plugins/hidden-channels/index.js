@@ -12,6 +12,7 @@
     COLLAPSED: 3,
     SHOW: 4,
   };
+  const IDENTIFY_OPCODE = 2;
   const LEGACY_GATEWAY_CAPABILITIES = 1734655;
   const OBFUSCATION_CACHE_KEY = "private_channel_obfuscation";
 
@@ -20,12 +21,20 @@
   const runtime = {
     patches: [],
     patched: {},
+    patchedSockets: new WeakSet(),
+    listeners: new Set(),
     active: true,
     permissionStore: null,
     realCan: null,
     viewChannel: null,
     channelStore: null,
     channelListModule: null,
+    gatewayStore: null,
+    fastConnect: null,
+    forceFullSyncNextIdentify: false,
+    lastIdentifyCapabilities: null,
+    lastIdentifyAt: null,
+    lastIdentifyForcedFullSync: false,
     originalRenderLevels: new Map(),
     touchedCategories: new Set(),
     touchedGuildLists: new Set(),
@@ -39,6 +48,20 @@
     runtime.patches.push(unpatch);
     runtime.patched[flag] = true;
     return true;
+  }
+
+  function notify() {
+    for (const listener of runtime.listeners) {
+      try { listener(); } catch {}
+    }
+  }
+
+  function useRuntimeRefresh() {
+    const [, render] = React.useReducer(value => value + 1, 0);
+    React.useEffect(() => {
+      runtime.listeners.add(render);
+      return () => runtime.listeners.delete(render);
+    }, []);
   }
 
   function resolveViewChannelPermission() {
@@ -94,6 +117,31 @@
     }
 
     return runtime.channelListModule;
+  }
+
+  function resolveGatewayStore() {
+    if (runtime.gatewayStore) return runtime.gatewayStore;
+
+    runtime.gatewayStore =
+      findByProps("getSocket", "isConnected")
+      ?? findByProps("getSocket", "isConnectedOrOverlay");
+
+    return runtime.gatewayStore;
+  }
+
+  function resolveFastConnect() {
+    if (runtime.fastConnect) return runtime.fastConnect;
+
+    try {
+      runtime.fastConnect = findByProps(
+        "closeFastConnectSocket",
+        "identifyWebSocket",
+      );
+    } catch {
+      runtime.fastConnect = null;
+    }
+
+    return runtime.fastConnect;
   }
 
   function getGuildId(channel) {
@@ -214,7 +262,7 @@
     if (looksObfuscated(channel)) {
       lines.push(
         "",
-        "Discord is still holding obfuscated metadata. Use Reload real channel metadata in this plugin's settings.",
+        "Discord is still holding server-obfuscated metadata. Use Reload real channel metadata in this plugin's settings.",
       );
     }
 
@@ -244,13 +292,121 @@
     } catch {}
   }
 
+  function closeFastConnectNow() {
+    const fastConnect = resolveFastConnect();
+
+    try { fastConnect?.closeFastConnectSocket?.(); } catch {}
+
+    try {
+      const holder = globalThis.window?._ws;
+      holder?.ws?.close?.(1000);
+      if (globalThis.window) globalThis.window._ws = null;
+    } catch {}
+  }
+
+  function patchFastConnect() {
+    if (runtime.patched.fastConnectIdentify) {
+      closeFastConnectNow();
+      return true;
+    }
+
+    const fastConnect = resolveFastConnect();
+    if (!fastConnect?.identifyWebSocket) return false;
+
+    const patched = addPatch(
+      "fastConnectIdentify",
+      instead("identifyWebSocket", fastConnect, (args, original) => {
+        if (!runtime.active) return original(...args);
+        return;
+      }),
+    );
+
+    closeFastConnectNow();
+    return patched;
+  }
+
+  function patchSocketSend(socket) {
+    if (!socket || typeof socket.send !== "function") return false;
+    if (runtime.patchedSockets.has(socket)) return true;
+
+    let unpatch;
+    try {
+      unpatch = instead("send", socket, (args, original) => {
+        if (runtime.active && args?.[0] === IDENTIFY_OPCODE) {
+          const payload = args?.[1];
+          if (payload && typeof payload === "object") {
+            const forceFullSync = runtime.forceFullSyncNextIdentify === true;
+            const nextPayload = {
+              ...payload,
+              capabilities: LEGACY_GATEWAY_CAPABILITIES,
+            };
+
+            if (forceFullSync) {
+              const clientState = payload.client_state && typeof payload.client_state === "object"
+                ? payload.client_state
+                : {};
+
+              nextPayload.client_state = {
+                ...clientState,
+                guild_versions: {},
+              };
+              runtime.forceFullSyncNextIdentify = false;
+            }
+
+            const nextArgs = [...args];
+            nextArgs[1] = nextPayload;
+
+            runtime.lastIdentifyCapabilities = LEGACY_GATEWAY_CAPABILITIES;
+            runtime.lastIdentifyAt = Date.now();
+            runtime.lastIdentifyForcedFullSync = forceFullSync;
+            notify();
+
+            return original(...nextArgs);
+          }
+        }
+
+        return original(...args);
+      });
+    } catch {
+      return false;
+    }
+
+    if (typeof unpatch !== "function") return false;
+    runtime.patchedSockets.add(socket);
+    runtime.patches.push(unpatch);
+    return true;
+  }
+
+  function patchGatewaySocket() {
+    const gateway = resolveGatewayStore();
+    if (!gateway?.getSocket) return false;
+
+    let changed = false;
+
+    if (!runtime.patched.gatewayGetSocket) {
+      changed = addPatch(
+        "gatewayGetSocket",
+        after("getSocket", gateway, (_args, socket) => {
+          if (runtime.active) patchSocketSend(socket);
+          return socket;
+        }),
+      ) || changed;
+    }
+
+    try {
+      changed = patchSocketSend(gateway.getSocket()) || changed;
+    } catch {}
+
+    return changed || runtime.patched.gatewayGetSocket === true;
+  }
+
   function reconnectGatewayFresh() {
     forceObfuscationOffNow();
+    patchFastConnect();
+    closeFastConnectNow();
+    patchGatewaySocket();
 
-    const gateway =
-      findByProps("getSocket", "isConnected")
-      ?? findByProps("getSocket", "isConnectedOrOverlay");
-
+    const gateway = resolveGatewayStore();
     let socket = null;
     try { socket = gateway?.getSocket?.(); } catch {}
 
@@ -264,10 +420,11 @@
       return;
     }
 
+    runtime.forceFullSyncNextIdentify = true;
+    runtime.lastIdentifyForcedFullSync = false;
+    notify();
+
     try {
-      // A normal reconnect may RESUME the old session, which keeps the old
-      // negotiated channel-obfuscation capability. Clear the resumable state
-      // so the next connection performs a fresh IDENTIFY.
       socket.sessionId = null;
       socket.seq = 0;
       socket.setResumeUrl?.(null);
@@ -285,7 +442,7 @@
 
       RN.Alert.alert(
         "Hidden Channels",
-        "Discord is performing a fresh gateway connection with private-channel obfuscation disabled. Give the server list a few seconds to reload.",
+        "Discord is reconnecting with the legacy channel-metadata capability and requesting a full guild/channel sync. Give the server list a few seconds to reload.",
       );
     } catch {
       try {
@@ -335,6 +492,9 @@
     if (guildList.categories && typeof guildList.categories === "object") {
       categories.push(...Object.values(guildList.categories));
     }
+    if (guildList.voiceChannelsCategory) {
+      categories.push(guildList.voiceChannelsCategory);
+    }
 
     let changed = false;
     for (const category of categories) {
@@ -381,6 +541,7 @@
     try {
       const modules = findAll(module => (
         typeof module?.isChannelMetadataObfuscationEnabled === "function"
+        || typeof module?.useIsChannelMetadataObfuscationEnabled === "function"
         || typeof module?.isChannelMetadataIntegrityCheckEnabled === "function"
         || typeof module?.getCachedPrivateChannelObfuscation === "function"
       ));
@@ -390,6 +551,7 @@
 
         for (const method of [
           "isChannelMetadataObfuscationEnabled",
+          "useIsChannelMetadataObfuscationEnabled",
           "isChannelMetadataIntegrityCheckEnabled",
           "getCachedPrivateChannelObfuscation",
         ]) {
@@ -550,6 +712,8 @@
 
     return [
       patchPrivateChannelObfuscation(),
+      patchFastConnect(),
+      patchGatewaySocket(),
       patchChannelListState(),
       patchChannelItems(),
       patchNavigation(),
@@ -558,6 +722,22 @@
   }
 
   function Settings() {
+    useRuntimeRefresh();
+
+    let diagnostic = "No gateway IDENTIFY has been captured yet.";
+    if (runtime.lastIdentifyCapabilities != null) {
+      const when = runtime.lastIdentifyAt
+        ? new Date(runtime.lastIdentifyAt).toLocaleTimeString()
+        : "unknown time";
+      diagnostic = [
+        `Last IDENTIFY capabilities: ${runtime.lastIdentifyCapabilities}`,
+        `Full guild/channel sync: ${runtime.lastIdentifyForcedFullSync ? "yes" : "no"}`,
+        `Captured: ${when}`,
+      ].join("\n");
+    } else if (runtime.forceFullSyncNextIdentify) {
+      diagnostic = "Waiting for the forced fresh IDENTIFY...";
+    }
+
     return React.createElement(
       RN.ScrollView,
       { contentContainerStyle: { padding: 16, paddingBottom: 32 } },
@@ -583,7 +763,7 @@
             marginBottom: 16,
           },
         },
-        "Hidden channels are inserted into Discord's normal channel list while Discord's real VIEW_CHANNEL permission result stays untouched. This keeps the native locked styling and avoids pretending you can read the channel.",
+        "Hidden channels are inserted into Discord's normal channel list while Discord's real VIEW_CHANNEL permission stays untouched. The gateway is forced to request the non-obfuscated channel metadata format.",
       ),
       React.createElement(
         RN.Pressable,
@@ -614,7 +794,29 @@
             marginTop: 10,
           },
         },
-        "Use this if channels still say No Access. It forces one fresh Discord gateway IDENTIFY with private-channel obfuscation disabled. It does not switch channels, type, or send anything. Avoid using it during an active voice call.",
+        "This closes Discord's fast-connect socket, forces a fresh IDENTIFY, and clears the cached guild versions once so Discord must request the channel records again. Avoid using it during an active voice call.",
+      ),
+      React.createElement(
+        RN.View,
+        {
+          style: {
+            marginTop: 16,
+            padding: 12,
+            borderRadius: 8,
+            backgroundColor: "#1E1F22",
+          },
+        },
+        React.createElement(
+          RN.Text,
+          {
+            style: {
+              color: "#DBDEE1",
+              fontSize: 13,
+              lineHeight: 19,
+            },
+          },
+          diagnostic,
+        ),
       ),
     );
   }
@@ -642,12 +844,14 @@
       } catch {}
     }
 
+    runtime.listeners.clear();
     runtime.originalRenderLevels.clear();
     runtime.touchedCategories.clear();
     runtime.touchedGuildLists.clear();
     runtime.patched = {};
     runtime.realCan = null;
     runtime.permissionStore = null;
+    runtime.forceFullSyncNextIdentify = false;
 
     if (globalThis[KEY] === runtime) {
       try { delete globalThis[KEY]; } catch { globalThis[KEY] = null; }
