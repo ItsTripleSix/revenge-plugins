@@ -109,19 +109,26 @@ Install in **Discord Settings → Revenge → Plugins → +**:
 https://raw.githubusercontent.com/ItsTripleSix/revenge-plugins/main/plugins/quick-mock/
 ```
 
-### Folder Contrast
+### Theme Toolkit
 
-Optional companion for dark/AMOLED themes. Discord derives an uncolored folder's default accent from its global brand color, which can make folders nearly disappear on a monochrome theme.
+General theme companion for Discord UI that normal Revenge theme JSON cannot fully control. It is designed to work both with custom themes and by itself.
 
-- Gives only folders that still use Discord's **default** color a visible light-gray accent.
-- Keeps the expanded folder background black.
-- Does not change a folder after you manually choose a color in Discord's folder settings.
-- Avoids changing Discord's global brand color, so unrelated buttons and controls are not recolored just to fix folders.
+Initial v0.1 features:
+
+- **Folder color source:** Theme / Toolkit / Discord.
+- **Collapsed folder cover:** active-theme preference / normal 2x2 server previews / folder icon.
+- Independent collapsed and expanded folder styling, so folder backgrounds and folder-icon tints no longer have to share Discord's single folder color.
+- Optional folder outlines.
+- Custom Toolkit folder background, accent and outline colors.
+- Reads the active Revenge theme and supports optional `themeToolkit` metadata in themes.
+- **True folder reset:** clears saved Discord `folderColor` values back to `null` instead of only making them look default.
+
+Planned sections include mention styling, icon replacement and icon packs, wallpapers including remembered per-DM wallpapers, fonts, hardcoded UI-color helpers, diagnostics and reset/export tools.
 
 Install in **Discord Settings → Revenge → Plugins → +**:
 
 ```text
-https://raw.githubusercontent.com/ItsTripleSix/revenge-plugins/main/plugins/folder-contrast/
+https://raw.githubusercontent.com/ItsTripleSix/revenge-plugins/main/plugins/theme-toolkit/
 ```
 
 ## Themes
@@ -138,7 +145,7 @@ A maximum-black OLED theme built around pure black surfaces with white and gray 
 - Hover/selected states use subtle translucent white instead of gray background panels where possible.
 - Keeps red, green, yellow, and orange status colors for danger/success/warning states so important UI meaning is not lost.
 - Uses the current Revenge/Vendetta **theme spec 2** format.
-- For visible default server folders while preserving manually chosen Discord folder colors, install the optional **Folder Contrast** companion plugin above.
+- Its current folder background token is AMOLED black; **Theme Toolkit** adds the separate white folder icon/outline behavior and folder-control options that theme JSON alone cannot provide.
 
 Install in **Discord Settings → Revenge → Themes → +** by pasting:
 
