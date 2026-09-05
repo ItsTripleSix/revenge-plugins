@@ -77,11 +77,31 @@ After first installing or updating Hidden Channels, force-close Discord and reop
 
 Fast alternating-case mock text inspired by Aliucord's MoreSlashCommands `/mock` command.
 
-- `/mock message:whatever` mocks manually entered text.
-- Reply to a text message and use `/mock` with no argument to mock the replied-to message.
-- Long-press a text message and tap **Mock** to place the mocked version in your composer.
-- Optional setting makes the long-press action send immediately instead.
-- Falls back to copying the transformed text if composer injection is unavailable.
+#### Ways to use it
+
+1. **Long-press → Mock — fastest**
+   - Long-press somebody's text message and tap **Mock**.
+   - By default, the mocked text is placed in your composer so you can review it first.
+   - Enable **Long-press sends immediately** in Quick Mock settings if you want it sent as soon as you tap Mock.
+
+2. **Reply → `/mock`**
+   - Reply to a text message.
+   - Type `/mock` with no `message` argument and send it.
+   - Quick Mock uses the message you replied to automatically.
+
+3. **`/mock message:...`**
+   - Use the slash command normally and enter any text in the `message` field.
+
+Example:
+
+```text
+/mock message:I know everything
+→ i KnOw eVeRyThInG
+```
+
+Quick Mock alternates capitalization across letters only, so spaces and punctuation do not change the pattern. If composer injection is unavailable, the long-press action falls back to copying the transformed text.
+
+The plugin settings page includes a collapsible **How to use** section with these same instructions and examples.
 
 Install in **Discord Settings → Revenge → Plugins → +**:
 
