@@ -73,6 +73,22 @@ https://raw.githubusercontent.com/ItsTripleSix/revenge-plugins/main/plugins/hidd
 
 After first installing or updating Hidden Channels, force-close Discord and reopen it once so the next gateway connection is made without Discord's private-channel metadata-obfuscation capability. If Discord stops sending a channel's metadata server-side entirely, a client plugin cannot reconstruct it.
 
+### Quick Mock
+
+Fast alternating-case mock text inspired by Aliucord's MoreSlashCommands `/mock` command.
+
+- `/mock message:whatever` mocks manually entered text.
+- Reply to a text message and use `/mock` with no argument to mock the replied-to message.
+- Long-press a text message and tap **Mock** to place the mocked version in your composer.
+- Optional setting makes the long-press action send immediately instead.
+- Falls back to copying the transformed text if composer injection is unavailable.
+
+Install in **Discord Settings → Revenge → Plugins → +**:
+
+```text
+https://raw.githubusercontent.com/ItsTripleSix/revenge-plugins/main/plugins/quick-mock/
+```
+
 ## Compatibility
 
 These plugins target Revenge Classic's Vendetta-compatible plugin loader. Discord updates can change internal modules and occasionally require plugin fixes.
