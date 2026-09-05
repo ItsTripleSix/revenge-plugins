@@ -1,13 +1,13 @@
 {
   "name": "Hidden Channels",
-  "description": "Show hidden server channel names and metadata while keeping Discord's real channel permissions intact.",
+  "description": "Temporarily disabled while a gateway compatibility crash is investigated.",
   "authors": [
     {
       "name": "ItsTripleSix"
     }
   ],
   "main": "index.js",
-  "hash": "b816eff0960b733ff3b5512581802afea1bbf35d",
+  "hash": "433e01a69f81fcccac93d9d91078849a8f889f33",
   "vendetta": {
     "icon": "LockIcon"
   }
