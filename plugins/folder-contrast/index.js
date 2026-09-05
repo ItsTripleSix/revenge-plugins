@@ -1,75 +1,88 @@
 (() => {
   "use strict";
 
-  const { before, after } = vendetta.patcher;
-  const { findByName } = vendetta.metro;
-  const findInReactTree = vendetta.utils?.findInReactTree;
+  const { before } = vendetta.patcher;
+  const { findByProps } = vendetta.metro;
 
-  // Light gray: visible against AMOLED black without being as harsh as pure white.
+  // Visible against AMOLED black without being as harsh as pure white.
   const DEFAULT_FOLDER_GRAY = parseInt("8A8A8A", 16);
-  const MARKER = "__itsTripleSixFolderContrastDefault";
 
   const GuildFolderModule = (() => {
-    try { return findByName?.("GuildsBarGuildFolder", false); }
+    try { return findByProps?.("GuildsBarGuildFolderBG"); }
     catch { return null; }
   })();
 
-  let unpatchBefore = null;
-  let unpatchAfter = null;
+  const defaultFolderIds = new Set();
+  const unpatches = [];
+
+  function patchComponent(component, callback) {
+    if (!component) return false;
+
+    try {
+      // Current Discord exports these folder components through React.memo.
+      if (typeof component.type === "function") {
+        unpatches.push(before("type", component, callback));
+        return true;
+      }
+    } catch {}
+
+    return false;
+  }
 
   function cloneFolderNode(folder) {
     try {
-      const clone = Object.assign(
+      return Object.assign(
         Object.create(Object.getPrototypeOf(folder) ?? Object.prototype),
         folder,
+        { color: DEFAULT_FOLDER_GRAY },
       );
-      clone.color = DEFAULT_FOLDER_GRAY;
-      clone[MARKER] = true;
-      return clone;
     } catch {
-      return { ...folder, color: DEFAULT_FOLDER_GRAY, [MARKER]: true };
+      return { ...folder, color: DEFAULT_FOLDER_GRAY };
     }
   }
 
   function patchFolderRendering() {
-    if (!GuildFolderModule?.default || !findInReactTree) return;
+    const main = GuildFolderModule?.default;
+    const background = GuildFolderModule?.GuildsBarGuildFolderBG;
 
-    // Discord derives the default folder accent from BRAND_500. Changing that
-    // raw theme color would also recolor unrelated Discord UI, so only inject a
-    // gray render color when the user has NOT chosen a folder color themselves.
-    unpatchBefore = before("default", GuildFolderModule, args => {
+    patchComponent(main, args => {
       try {
         const props = args?.[0];
         const folder = props?.id;
-        if (!folder || folder.color != null) return;
+        if (!folder || folder.id == null) return;
 
-        args[0] = {
-          ...props,
-          id: cloneFolderNode(folder),
-        };
+        const key = String(folder.id);
+
+        // A null/undefined color means the user has left this folder on
+        // Discord's default color. Only those folders receive our gray accent.
+        if (folder.color == null) {
+          defaultFolderIds.add(key);
+          args[0] = {
+            ...props,
+            id: cloneFolderNode(folder),
+          };
+        } else {
+          // The user selected a real Discord folder color: leave it untouched.
+          defaultFolderIds.delete(key);
+        }
       } catch {}
     });
 
-    unpatchAfter = after("default", GuildFolderModule, (args, result) => {
+    patchComponent(background, args => {
       try {
-        const folder = args?.[0]?.id;
-        if (!folder?.[MARKER]) return result;
+        const props = args?.[0];
+        if (!props || props.folderId == null) return;
 
-        // The injected gray should color the collapsed folder tile / folder
-        // icon only. Discord also passes that color to the expanded-folder
-        // background; clear it there so the AMOLED background stays black.
-        const bg = findInReactTree(
-          result,
-          node => node?.props
-            && node.props.folderId === folder.id
-            && node.props.color === DEFAULT_FOLDER_GRAY
-            && Object.prototype.hasOwnProperty.call(node.props, "totalItems"),
-        );
-
-        if (bg?.props) bg.props.color = null;
+        // The parent uses gray so the collapsed folder tile / expanded folder
+        // icon is visible. Strip that synthetic color only from the expanded
+        // folder background so AMOLED black remains black.
+        if (
+          defaultFolderIds.has(String(props.folderId))
+          && props.color === DEFAULT_FOLDER_GRAY
+        ) {
+          args[0] = { ...props, color: null };
+        }
       } catch {}
-
-      return result;
     });
   }
 
@@ -78,10 +91,10 @@
       patchFolderRendering();
     },
     onUnload() {
-      try { unpatchBefore?.(); } catch {}
-      try { unpatchAfter?.(); } catch {}
-      unpatchBefore = null;
-      unpatchAfter = null;
+      for (const unpatch of unpatches.splice(0)) {
+        try { unpatch?.(); } catch {}
+      }
+      defaultFolderIds.clear();
     },
   };
 })();
