@@ -53,6 +53,26 @@ https://raw.githubusercontent.com/ItsTripleSix/revenge-plugins/main/plugins/comp
 
 Composer Cleaner only removes controls that it can identify as Discord-native composer controls. Unknown third-party buttons are preserved so it can coexist with plugins such as Silent Typing.
 
+### Hidden Channels
+
+Shows server channels that Discord normally removes from the sidebar when your account lacks `VIEW_CHANNEL` permission.
+
+- Disables Discord's private-channel metadata-obfuscation capability when the client connects.
+- Shows the real channel name and preserves normal category/order when Discord still sends that metadata.
+- Marks inaccessible channel rows as locked.
+- Suppresses unread styling for inaccessible channels.
+- Tapping a hidden channel opens a metadata summary instead of trying to load its messages.
+- Metadata summary includes name, type, topic, creation date, overwrite count, and channel ID.
+- Blocks message fetching and direct channel navigation for channels you cannot access.
+
+Install in **Discord Settings → Revenge → Plugins → +**:
+
+```text
+https://raw.githubusercontent.com/ItsTripleSix/revenge-plugins/main/plugins/hidden-channels/
+```
+
+After first installing or updating Hidden Channels, force-close Discord and reopen it once so the next gateway connection is made without Discord's private-channel metadata-obfuscation capability. If Discord stops sending a channel's metadata server-side entirely, a client plugin cannot reconstruct it.
+
 ## Compatibility
 
 These plugins target Revenge Classic's Vendetta-compatible plugin loader. Discord updates can change internal modules and occasionally require plugin fixes.
