@@ -122,8 +122,19 @@
     if (Array.isArray(node)) return node.map(cleanTree).filter(Boolean);
     if (!React.isValidElement(node)) return node;
     if (shouldHide(node)) return null;
+
     const children = node.props?.children;
     if (children === undefined) return node;
+
+    if (typeof children === "function") {
+      const wrappedChildren = (...args) => cleanTree(children(...args));
+      try {
+        return React.cloneElement(node, { children: wrappedChildren });
+      } catch {
+        return node;
+      }
+    }
+
     const next = cleanTree(children);
     if (next === children) return node;
     try { return React.cloneElement(node, undefined, next); } catch { return node; }
