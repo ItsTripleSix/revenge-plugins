@@ -1,13 +1,13 @@
 {
   "name": "Folder Contrast",
-  "description": "Makes Discord's default server folder accent visible on AMOLED themes without changing manually selected folder colors.",
+  "description": "Makes Discord's default server folder icon visible on AMOLED themes without changing manually selected folder colors.",
   "authors": [
     {
       "name": "ItsTripleSix"
     }
   ],
-  "main": "index.js",
-  "hash": "29df2d8b77dc57f4d802da86912a629f74acdb9a",
+  "main": "index-v2.js",
+  "hash": "f3683e5248d3dcbca78144d5403503fce455b660",
   "vendetta": {
     "icon": "FolderIcon"
   }
