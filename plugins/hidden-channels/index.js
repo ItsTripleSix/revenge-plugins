@@ -22,6 +22,8 @@
     permissionStore: null,
     realCan: null,
     viewChannel: null,
+    obfuscationModuleFound: false,
+    nativePreferenceSet: false,
     cleanup: null,
   };
   globalThis[KEY] = rt;
@@ -95,11 +97,6 @@
     const gid = guildId(direct) ?? guildId(canonical);
     const mutable = getMutableGuildChannel(gid, id);
     return { direct, canonical, mutable, id, gid };
-  }
-
-  function resolveChannel(value) {
-    const { direct, canonical, mutable } = getCandidates(value);
-    return canonical ?? direct ?? mutable ?? null;
   }
 
   const isGuildChannel = channel => (
@@ -360,6 +357,65 @@
     return changed;
   }
 
+  function patchPrivateChannelHiding() {
+    let module = null;
+    try {
+      module = findByProps(
+        "isChannelMetadataObfuscationEnabled",
+        "useIsChannelMetadataObfuscationEnabled",
+      );
+    } catch {}
+
+    if (!module) return false;
+    rt.obfuscationModuleFound = true;
+
+    let changed = false;
+
+    if (typeof module.isChannelMetadataObfuscationEnabled === "function") {
+      changed = safePatch(
+        "metadataObfuscationEnabled",
+        () => after("isChannelMetadataObfuscationEnabled", module, () => false),
+      ) || changed;
+    }
+
+    // Keep Discord's hook call intact, but force its final value to false.
+    // This avoids changing React hook order in App.
+    if (typeof module.useIsChannelMetadataObfuscationEnabled === "function") {
+      changed = safePatch(
+        "metadataObfuscationHook",
+        () => after("useIsChannelMetadataObfuscationEnabled", module, () => false),
+      ) || changed;
+    }
+
+    if (typeof module.isChannelMetadataIntegrityCheckEnabled === "function") {
+      changed = safePatch(
+        "metadataIntegrityCheck",
+        () => after("isChannelMetadataIntegrityCheckEnabled", module, () => false),
+      ) || changed;
+    }
+
+    if (typeof module.getCachedPrivateChannelObfuscation === "function") {
+      changed = safePatch(
+        "cachedMetadataObfuscation",
+        () => after("getCachedPrivateChannelObfuscation", module, () => false),
+      ) || changed;
+    }
+
+    // Discord stores the flag used by Android fast-connect separately.
+    // Setting it to false affects the next normal app start; it does not
+    // close/reopen sockets or force a reconnect here.
+    try {
+      const nativePreference = findByProps("setUseChannelObfuscation", "setUseAltGateway")
+        ?? findByProps("setUseChannelObfuscation");
+      if (typeof nativePreference?.setUseChannelObfuscation === "function") {
+        nativePreference.setUseChannelObfuscation(false);
+        rt.nativePreferenceSet = true;
+      }
+    } catch {}
+
+    return changed;
+  }
+
   function inspectRawNames() {
     const guildStore = findByProps("getGuilds", "getGuild") ?? findByProps("getGuild");
     let hidden = 0;
@@ -406,10 +462,13 @@
       `Mutable raw names present: ${mutableNamed}`,
       `Canonical getChannel names present: ${canonicalNamed}`,
       `Recovered from mutable guild records: ${recovered}`,
-      `Raw names missing everywhere: ${missing}`,
+      `Raw names still sanitized: ${missing}`,
+      "",
+      `Obfuscation module patched: ${rt.obfuscationModuleFound ? "yes" : "no"}`,
+      `Fast-connect preference set off: ${rt.nativePreferenceSet ? "yes" : "no"}`,
       examples.length ? `\nExamples:\n${examples.join("\n")}` : "",
       "",
-      "Read-only check. No reconnect, gateway, socket, experiment, or cache changes.",
+      "No socket close, reconnect, IDENTIFY interception, or route switching is performed.",
     ].filter(Boolean).join("\n");
 
     try { RN.Alert.alert("Hidden Channels", message); } catch {}
@@ -417,7 +476,12 @@
 
   function install() {
     channelStore();
-    return [patchChannelList(), patchChannelRows(), patchNameHelpers()];
+    return [
+      patchPrivateChannelHiding(),
+      patchChannelList(),
+      patchChannelRows(),
+      patchNameHelpers(),
+    ];
   }
 
   function Settings() {
@@ -439,7 +503,7 @@
           lineHeight: 20,
           marginBottom: 16,
         },
-      }, "Render-only build modeled after Aliucord's approach. Hidden rows recover their real name from Discord's mutable per-guild channel records when getChannel returns a sanitized ___hidden___ record. It does not touch the gateway, sockets, reconnect logic, experiments, or Discord's cache."),
+      }, "Shows inaccessible channels and disables Discord's private-channel metadata obfuscation at the experiment/config level. Existing sanitized records may require one full app restart before their real names return. This build does not intercept IDENTIFY, close sockets, or force reconnects."),
       React.createElement(RN.Pressable, {
         onPress: inspectRawNames,
         style: {
@@ -452,7 +516,7 @@
         },
       }, React.createElement(RN.Text, {
         style: { color: "#FFFFFF", fontSize: 15, fontWeight: "700" },
-      }, "Inspect raw hidden names")),
+      }, "Inspect hidden channel state")),
     );
   }
 
@@ -497,7 +561,7 @@
       rt.active = true;
       const current = install();
       if (![...early, ...current].some(Boolean)) {
-        throw new Error("Discord channel-list modules were not found");
+        throw new Error("Discord hidden-channel modules were not found");
       }
     },
     onUnload: cleanup,
