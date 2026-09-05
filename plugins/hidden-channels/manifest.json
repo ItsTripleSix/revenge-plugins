@@ -1,13 +1,13 @@
 {
   "name": "Hidden Channels",
-  "description": "Temporarily disabled while a gateway compatibility crash is investigated.",
+  "description": "Show hidden server channel names using render-only channel list patches.",
   "authors": [
     {
       "name": "ItsTripleSix"
     }
   ],
   "main": "index.js",
-  "hash": "433e01a69f81fcccac93d9d91078849a8f889f33",
+  "hash": "596981e7bb3d8c944d24356e6839801050924ab1",
   "vendetta": {
     "icon": "LockIcon"
   }
