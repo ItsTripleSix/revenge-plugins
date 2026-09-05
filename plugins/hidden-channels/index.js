@@ -51,21 +51,6 @@
     return value.channel ?? value.record ?? value;
   }
 
-  function resolveChannel(value) {
-    const unwrapped = unwrapChannel(value);
-    if (!unwrapped) return null;
-
-    const id = typeof unwrapped === "string" ? unwrapped : unwrapped?.id;
-    if (id != null) {
-      try {
-        const stored = channelStore()?.getChannel?.(id);
-        if (stored) return stored;
-      } catch {}
-    }
-
-    return typeof unwrapped === "object" ? unwrapped : null;
-  }
-
   const guildId = channel => {
     try {
       return channel?.guild_id ?? channel?.guildId ?? channel?.getGuildId?.() ?? null;
@@ -73,6 +58,49 @@
       return channel?.guild_id ?? channel?.guildId ?? null;
     }
   };
+
+  function getCanonicalChannel(id) {
+    if (id == null) return null;
+    try { return channelStore()?.getChannel?.(id) ?? null; }
+    catch { return null; }
+  }
+
+  function getMutableGuildChannel(gid, id) {
+    if (gid == null || id == null) return null;
+    try {
+      const channels = channelStore()?.getMutableGuildChannelsForGuild?.(gid);
+      if (!channels || typeof channels !== "object") return null;
+
+      if (typeof channels.get === "function") {
+        const found = channels.get(id);
+        if (found) return found;
+      }
+
+      if (Object.prototype.hasOwnProperty.call(channels, id)) {
+        return channels[id] ?? null;
+      }
+
+      for (const channel of Object.values(channels)) {
+        if (channel?.id === id) return channel;
+      }
+    } catch {}
+    return null;
+  }
+
+  function getCandidates(value) {
+    const unwrapped = unwrapChannel(value);
+    const direct = typeof unwrapped === "object" ? unwrapped : null;
+    const id = typeof unwrapped === "string" ? unwrapped : direct?.id;
+    const canonical = getCanonicalChannel(id);
+    const gid = guildId(direct) ?? guildId(canonical);
+    const mutable = getMutableGuildChannel(gid, id);
+    return { direct, canonical, mutable, id, gid };
+  }
+
+  function resolveChannel(value) {
+    const { direct, canonical, mutable } = getCandidates(value);
+    return canonical ?? direct ?? mutable ?? null;
+  }
 
   const isGuildChannel = channel => (
     !!channel
@@ -108,8 +136,12 @@
   }
 
   const isHidden = value => {
-    const channel = resolveChannel(value);
-    return isGuildChannel(channel) && (isObfuscated(channel) || lacksView(channel));
+    const { direct, canonical, mutable } = getCandidates(value);
+    for (const channel of [direct, canonical, mutable]) {
+      if (!isGuildChannel(channel)) continue;
+      if (isObfuscated(channel) || lacksView(channel)) return true;
+    }
+    return false;
   };
 
   const isPlaceholder = value => (
@@ -117,13 +149,21 @@
     && /^(?:\s*no[\s_-]*access\s*|_+hidden_+)$/i.test(value.trim())
   );
 
-  const rawName = value => {
-    const name = resolveChannel(value)?.name;
+  function usableName(channel) {
+    const name = channel?.name;
     if (typeof name !== "string") return null;
     const trimmed = name.trim();
     if (!trimmed || isPlaceholder(trimmed)) return null;
     return trimmed;
-  };
+  }
+
+  function rawName(value) {
+    const { mutable, direct, canonical } = getCandidates(value);
+    return usableName(mutable)
+      ?? usableName(direct)
+      ?? usableName(canonical)
+      ?? null;
+  }
 
   function replacePlaceholder(node, name) {
     if (isPlaceholder(node)) return name;
@@ -176,7 +216,7 @@
     let changed = false;
 
     for (const item of Object.values(category.channels)) {
-      const channel = resolveChannel(item?.record ?? item?.channel ?? item);
+      const channel = item?.record ?? item?.channel ?? item;
       if (!isHidden(channel)) continue;
 
       if (!rt.originals.has(item)) {
@@ -280,10 +320,9 @@
       if (!rt.active) return result;
 
       const passedChannel = unwrapChannel(args?.[0]?.channel);
-      const channel = resolveChannel(passedChannel);
-      if (!isHidden(channel)) return result;
+      if (!isHidden(passedChannel)) return result;
 
-      const name = rawName(channel);
+      const name = rawName(passedChannel);
       return name ? replacePlaceholder(result, name) : result;
     }));
   }
@@ -299,7 +338,7 @@
         "computeChannelName",
         () => after("computeChannelName", module, (args, result) => {
           if (!rt.active || !isPlaceholder(result)) return result;
-          const channel = resolveChannel(args?.[0]);
+          const channel = args?.[0];
           if (!isHidden(channel)) return result;
           return rawName(channel) ?? result;
         }),
@@ -311,7 +350,7 @@
         "useChannelName",
         () => after("default", module, (args, result) => {
           if (!rt.active || !isPlaceholder(result)) return result;
-          const channel = resolveChannel(args?.[0]);
+          const channel = args?.[0];
           if (!isHidden(channel)) return result;
           return rawName(channel) ?? result;
         }),
@@ -324,8 +363,10 @@
   function inspectRawNames() {
     const guildStore = findByProps("getGuilds", "getGuild") ?? findByProps("getGuild");
     let hidden = 0;
-    let named = 0;
-    let unnamed = 0;
+    let mutableNamed = 0;
+    let canonicalNamed = 0;
+    let recovered = 0;
+    let missing = 0;
     const examples = [];
 
     try {
@@ -345,21 +386,27 @@
           if (!isHidden(channel)) continue;
           hidden += 1;
 
-          const name = rawName(channel);
-          if (name) {
-            named += 1;
-            if (examples.length < 8) examples.push(`#${name}`);
+          const mutableName = usableName(channel);
+          const canonicalName = usableName(getCanonicalChannel(channel?.id));
+
+          if (mutableName) {
+            mutableNamed += 1;
+            if (!canonicalName) recovered += 1;
+            if (examples.length < 8) examples.push(`#${mutableName}`);
           } else {
-            unnamed += 1;
+            missing += 1;
           }
+          if (canonicalName) canonicalNamed += 1;
         }
       }
     } catch {}
 
     const message = [
       `Hidden/obfuscated loaded: ${hidden}`,
-      `Raw names present: ${named}`,
-      `Raw names missing: ${unnamed}`,
+      `Mutable raw names present: ${mutableNamed}`,
+      `Canonical getChannel names present: ${canonicalNamed}`,
+      `Recovered from mutable guild records: ${recovered}`,
+      `Raw names missing everywhere: ${missing}`,
       examples.length ? `\nExamples:\n${examples.join("\n")}` : "",
       "",
       "Read-only check. No reconnect, gateway, socket, experiment, or cache changes.",
@@ -392,7 +439,7 @@
           lineHeight: 20,
           marginBottom: 16,
         },
-      }, "Render-only build modeled after Aliucord's approach. Hidden rows use the canonical ChannelStore record for their real name, even when Discord passes a sanitized ___hidden___ row to the renderer. It does not touch the gateway, sockets, reconnect logic, experiments, or Discord's cache."),
+      }, "Render-only build modeled after Aliucord's approach. Hidden rows recover their real name from Discord's mutable per-guild channel records when getChannel returns a sanitized ___hidden___ record. It does not touch the gateway, sockets, reconnect logic, experiments, or Discord's cache."),
       React.createElement(RN.Pressable, {
         onPress: inspectRawNames,
         style: {
