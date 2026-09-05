@@ -1,7 +1,7 @@
 {
   "name": "AMOLED Monochrome",
   "description": "Maximum AMOLED black with white/gray text, borders, and accents. Status colors stay colored for usability.",
-  "version": "1.1",
+  "version": "1.2",
   "authors": [
     {
       "name": "ItsTripleSix"
@@ -190,7 +190,7 @@
     "BRAND_400": "#D9D9D9",
     "BRAND_430": "#BFBFBF",
     "BRAND_460": "#8A8A8A",
-    "BRAND_500": "#111111",
+    "BRAND_500": "#8A8A8A",
     "BRAND_530": "#0D0D0D",
     "BRAND_560": "#0A0A0A",
     "BRAND_600": "#080808",
