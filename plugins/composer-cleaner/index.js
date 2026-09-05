@@ -96,7 +96,17 @@
     ].filter(value => typeof value === "string" && value.length).join(" ").toLowerCase();
   }
 
+  function isNativeExpressionButton(element) {
+    if (!React.isValidElement(element)) return false;
+    const props = element.props ?? {};
+    return Object.prototype.hasOwnProperty.call(props, "showKeyboardIcon")
+      && Object.prototype.hasOwnProperty.call(props, "active")
+      && typeof props.onPress === "function";
+  }
+
   function shouldHide(element) {
+    if (storage.hideEmoji && isNativeExpressionButton(element)) return true;
+
     const text = describe(element);
     if (!text) return false;
     if (storage.hideAttachment && (/\battachment\b|\bupload\b|\bphotos?\b|\bmedia\b/.test(text) || text.includes("mediakeyboardbuttonicon") || text.includes("attachmenticon"))) return true;
