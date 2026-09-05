@@ -1,0 +1,12 @@
+{
+  "name": "Mention Tag Probe",
+  "description": "Temporary Theme Toolkit development probe for Discord's inline @mention renderer.",
+  "authors": [
+    { "name": "ItsTripleSix" }
+  ],
+  "main": "index.js",
+  "hash": "81b9e0444318f473d90f2c7ac8223ba46fa03b89",
+  "vendetta": {
+    "icon": "AtIcon"
+  }
+}
