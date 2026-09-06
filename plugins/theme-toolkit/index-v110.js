@@ -39,6 +39,29 @@
   })();
   const UserStore = (() => { try { return findByProps("getUser", "getCurrentUser") ?? findByProps("getUser"); } catch { return null; } })();
   const ChannelIconUtils = (() => { try { return findByProps("getChannelIconURL", "getChannelIconSource"); } catch { return null; } })();
+  const BaseChannelItemModule = (() => {
+    try {
+      return findByProps("ChannelModes", "BaseChannelIcon")
+        ?? findByName?.("BaseChannelItem", false)
+        ?? findByName?.("BaseChannelItem")
+        ?? null;
+    } catch { return null; }
+  })();
+  const UseRowManagerModule = (() => {
+    try {
+      const named = findByName?.("useRowManager", false) ?? findByName?.("useRowManager");
+      const found = find?.(value => {
+        try {
+          const component = value?.default;
+          const source = typeof component === "function" ? String(component) : "";
+          return component === named
+            || value?.useRowManager === named
+            || (source.includes("createRows") && source.includes("updateRows") && source.includes("scrollToMessageId"));
+        } catch { return false; }
+      });
+      return found ?? (typeof named?.default === "function" ? named : null);
+    } catch { return null; }
+  })();
   const ImageManager = RN.NativeModules?.ImageManager
     ?? globalThis?.nativeModuleProxy?.ImageManager
     ?? globalThis?.window?.nativeModuleProxy?.ImageManager
@@ -251,11 +274,14 @@
   let unpatchLegacyHeaderIcon = null;
   let unpatchHeaderIconButton = null;
   let unpatchGuildWrapperOverlay = null;
+  let unpatchChannelUnread = null;
+  let unpatchMessageRowManager = null;
   let appStateSubscription = null;
   let contextStoreSubscriptions = [];
   let contextAutoPaletteTimer = null;
   let contextAutoPaletteRequest = 0;
   let activeContextPaletteSignature = "";
+  let messageRowRefreshTimer = null;
   const visualSubscribers = new Set();
   const colorSubscribers = new Set();
   let colorTimer = null;
@@ -265,6 +291,7 @@
   const pathGeometryCache = new Map();
   const searchRenderWrappers = new WeakMap();
   const guildIndicatorRenderWrappers = new WeakMap();
+  const messageRowRefreshers = new Map();
   const iconAssetIds = (() => {
     try {
       return {
@@ -302,8 +329,28 @@
     notifyVisuals();
     try { FolderStore?.emitChange?.(); } catch {}
   }
+  function refreshCurrentMessageRows() {
+    const channelId = selectedChannelId();
+    const refresh = channelId ? messageRowRefreshers.get(String(channelId)) : null;
+    if (typeof refresh !== "function") return false;
+    try {
+      refresh();
+      return true;
+    } catch (error) {
+      try { console.error("[ThemeToolkit] message row refresh failed", error); } catch {}
+      messageRowRefreshers.delete(String(channelId));
+      return false;
+    }
+  }
   function refreshMentionUI() {
+    refreshCurrentMessageRows();
     try { MessageStore?.emitChange?.(); } catch {}
+    if (messageRowRefreshTimer != null) clearTimeout(messageRowRefreshTimer);
+    messageRowRefreshTimer = setTimeout(() => {
+      messageRowRefreshTimer = null;
+      refreshCurrentMessageRows();
+      try { MessageStore?.emitChange?.(); } catch {}
+    }, 200);
   }
   function refreshContextUI() {
     const stores = new Set([SelectedGuildStore, SelectedChannelStore, ChannelStore, GuildStore].filter(Boolean));
@@ -2693,6 +2740,52 @@
     } catch (error) { try { console.error("[ThemeToolkit] failed to patch expanded folder background", error); } catch {} return null; }
   }
 
+  function patchChannelUnreadIndicators() {
+    if (!BaseChannelItemModule || typeof BaseChannelItemModule.default !== "function" || !findInReactTree) return null;
+    try {
+      return after("default", BaseChannelItemModule, (_args, result) => {
+        try {
+          const cfg = effectiveUIAccentConfig();
+          const color = cfg.source === "discord" ? null : stripAlpha(cfg.selectedGuild);
+          if (!color) return result;
+          const indicator = findInReactTree(result, node => node?.props?.unread === true
+            && node.props?.resolvedUnreadSetting != null
+            && node.props?.style != null);
+          if (indicator?.props) indicator.props.style = [indicator.props.style, { backgroundColor: color }];
+        } catch (error) {
+          try { console.error("[ThemeToolkit] channel unread recolor failed", error); } catch {}
+        }
+        return result;
+      });
+    } catch (error) {
+      try { console.error("[ThemeToolkit] failed channel unread hook", error); } catch {}
+      return null;
+    }
+  }
+
+  function patchMessageRowManager() {
+    if (!UseRowManagerModule || typeof UseRowManagerModule.default !== "function") return null;
+    try {
+      return after("default", UseRowManagerModule, (args, result) => {
+        try {
+          if (typeof result?.updateRows !== "function") return result;
+          const channelId = args?.[0]?.channelId ?? args?.[0]?.channel?.id ?? selectedChannelId();
+          if (!channelId) return result;
+          const key = String(channelId);
+          messageRowRefreshers.delete(key);
+          messageRowRefreshers.set(key, () => result.updateRows({ forceRender: true, forceReload: true }));
+          while (messageRowRefreshers.size > 24) messageRowRefreshers.delete(messageRowRefreshers.keys().next().value);
+        } catch (error) {
+          try { console.error("[ThemeToolkit] message row manager capture failed", error); } catch {}
+        }
+        return result;
+      });
+    } catch (error) {
+      try { console.error("[ThemeToolkit] failed message row manager hook", error); } catch {}
+      return null;
+    }
+  }
+
   function patchMentionTags() {
     if (!MarkupParsers || typeof MarkupParsers.parseMessageMarkup !== "function") return null;
     try {
@@ -3235,7 +3328,7 @@
       : "No custom theme active • Discord defaults available";
     return React.createElement(RN.ScrollView, { contentContainerStyle: page },
       React.createElement(RN.View, { style: card },
-        React.createElement(RN.Text, { style: title }, "Theme Toolkit v1.1.2 TEST"),
+        React.createElement(RN.Text, { style: title }, "Theme Toolkit v1.1.3 TEST"),
         React.createElement(RN.Text, { style: text }, activeThemeText),
         React.createElement(RN.Text, { style: text }, "Generate a coordinated palette manually or match each server and DM from its image. Themes with Toolkit metadata, ordinary themes, and Discord without a custom theme are all supported."),
       ),
@@ -3250,6 +3343,7 @@
             style: { width: 72, height: 72, borderRadius: 16, backgroundColor: "#000000" },
           }) : React.createElement(RN.Text, { style: text }, "No usable image is available in the currently selected context."),
           React.createElement(RN.Text, { style: text }, `Native color extractor: ${typeof ImageManager?.getDominantColors === "function" ? "FOUND" : "MISSING"}`),
+          React.createElement(RN.Text, { style: text }, `Live refresh hooks: Unread ${typeof BaseChannelItemModule?.default === "function" ? "FOUND" : "MISSING"} • Messages ${typeof UseRowManagerModule?.default === "function" ? "FOUND" : "MISSING"}`),
           React.createElement(ToggleRow, {
             labelText: "Automatic server / DM palettes",
             value: storage.contextAutoPaletteEnabled === true,
@@ -3467,6 +3561,8 @@
       installContextStoreListeners();
       unpatchFolder = patchFolderRenderer();
       unpatchFolderBG = patchExpandedFolderBackground();
+      unpatchChannelUnread = patchChannelUnreadIndicators();
+      unpatchMessageRowManager = patchMessageRowManager();
       unpatchMentions = patchMentionHighlights();
       unpatchMentionTags = patchMentionTags();
       unpatchGuildBarStyles = patchGuildBarAccent();
@@ -3496,6 +3592,8 @@
     onUnload() {
       try { unpatchFolder?.(); } catch {}
       try { unpatchFolderBG?.(); } catch {}
+      try { unpatchChannelUnread?.(); } catch {}
+      try { unpatchMessageRowManager?.(); } catch {}
       try { unpatchMentions?.(); } catch {}
       try { unpatchMentionTags?.(); } catch {}
       try { unpatchGuildBarStyles?.(); } catch {}
@@ -3523,6 +3621,8 @@
       try { unpatchGuildWrapperOverlay?.(); } catch {}
       unpatchFolder = null;
       unpatchFolderBG = null;
+      unpatchChannelUnread = null;
+      unpatchMessageRowManager = null;
       unpatchMentions = null;
       unpatchMentionTags = null;
       unpatchGuildBarStyles = null;
@@ -3553,8 +3653,11 @@
       visualSubscribers.clear();
       colorSubscribers.clear();
       stopColorTimer();
+      if (messageRowRefreshTimer != null) clearTimeout(messageRowRefreshTimer);
+      messageRowRefreshTimer = null;
       stopSharedMotionClocks();
       pathGeometryCache.clear();
+      messageRowRefreshers.clear();
       // WeakMap entries disappear with Discord's component functions after unload.
     },
     settings: Settings,
