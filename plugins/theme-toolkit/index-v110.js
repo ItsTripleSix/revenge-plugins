@@ -47,6 +47,19 @@
         ?? null;
     } catch { return null; }
   })();
+  const ChannelUnreadIndicatorModule = (() => {
+    try {
+      const named = findByName?.("ChannelIndicator", false) ?? findByName?.("ChannelIndicator");
+      const found = find?.(value => {
+        try {
+          const component = value?.default;
+          const source = typeof component === "function" ? String(component) : "";
+          return component === named || (source.includes("resolvedUnreadSetting") && source.includes("unread") && source.includes("style"));
+        } catch { return false; }
+      });
+      return found ?? (typeof named?.default === "function" ? named : null);
+    } catch { return null; }
+  })();
   const UseRowManagerModule = (() => {
     try {
       const named = findByName?.("useRowManager", false) ?? findByName?.("useRowManager");
@@ -275,6 +288,7 @@
   let unpatchHeaderIconButton = null;
   let unpatchGuildWrapperOverlay = null;
   let unpatchChannelUnread = null;
+  let unpatchChannelUnreadDirect = null;
   let unpatchMessageRowManager = null;
   let appStateSubscription = null;
   let contextStoreSubscriptions = [];
@@ -2763,6 +2777,27 @@
     }
   }
 
+  function patchDirectChannelUnreadIndicator() {
+    if (!ChannelUnreadIndicatorModule || typeof ChannelUnreadIndicatorModule.default !== "function") return null;
+    try {
+      return before("default", ChannelUnreadIndicatorModule, args => {
+        try {
+          const props = args?.[0];
+          if (!props || props.unread !== true) return;
+          const cfg = effectiveUIAccentConfig();
+          const color = cfg.source === "discord" ? null : stripAlpha(cfg.selectedGuild);
+          if (!color) return;
+          args[0] = { ...props, style: [props.style, { backgroundColor: color }] };
+        } catch (error) {
+          try { console.error("[ThemeToolkit] direct channel unread recolor failed", error); } catch {}
+        }
+      });
+    } catch (error) {
+      try { console.error("[ThemeToolkit] failed direct channel unread hook", error); } catch {}
+      return null;
+    }
+  }
+
   function patchMessageRowManager() {
     if (!UseRowManagerModule || typeof UseRowManagerModule.default !== "function") return null;
     try {
@@ -3328,7 +3363,7 @@
       : "No custom theme active • Discord defaults available";
     return React.createElement(RN.ScrollView, { contentContainerStyle: page },
       React.createElement(RN.View, { style: card },
-        React.createElement(RN.Text, { style: title }, "Theme Toolkit v1.1.3 TEST"),
+        React.createElement(RN.Text, { style: title }, "Theme Toolkit v1.1.4 TEST"),
         React.createElement(RN.Text, { style: text }, activeThemeText),
         React.createElement(RN.Text, { style: text }, "Generate a coordinated palette manually or match each server and DM from its image. Themes with Toolkit metadata, ordinary themes, and Discord without a custom theme are all supported."),
       ),
@@ -3343,7 +3378,7 @@
             style: { width: 72, height: 72, borderRadius: 16, backgroundColor: "#000000" },
           }) : React.createElement(RN.Text, { style: text }, "No usable image is available in the currently selected context."),
           React.createElement(RN.Text, { style: text }, `Native color extractor: ${typeof ImageManager?.getDominantColors === "function" ? "FOUND" : "MISSING"}`),
-          React.createElement(RN.Text, { style: text }, `Live refresh hooks: Unread ${typeof BaseChannelItemModule?.default === "function" ? "FOUND" : "MISSING"} • Messages ${typeof UseRowManagerModule?.default === "function" ? "FOUND" : "MISSING"}`),
+          React.createElement(RN.Text, { style: text }, `Live refresh hooks: Unread ${typeof ChannelUnreadIndicatorModule?.default === "function" ? "DIRECT" : typeof BaseChannelItemModule?.default === "function" ? "FALLBACK" : "MISSING"} • Messages ${typeof UseRowManagerModule?.default === "function" ? "FOUND" : "MISSING"}`),
           React.createElement(ToggleRow, {
             labelText: "Automatic server / DM palettes",
             value: storage.contextAutoPaletteEnabled === true,
@@ -3562,6 +3597,7 @@
       unpatchFolder = patchFolderRenderer();
       unpatchFolderBG = patchExpandedFolderBackground();
       unpatchChannelUnread = patchChannelUnreadIndicators();
+      unpatchChannelUnreadDirect = patchDirectChannelUnreadIndicator();
       unpatchMessageRowManager = patchMessageRowManager();
       unpatchMentions = patchMentionHighlights();
       unpatchMentionTags = patchMentionTags();
@@ -3593,6 +3629,7 @@
       try { unpatchFolder?.(); } catch {}
       try { unpatchFolderBG?.(); } catch {}
       try { unpatchChannelUnread?.(); } catch {}
+      try { unpatchChannelUnreadDirect?.(); } catch {}
       try { unpatchMessageRowManager?.(); } catch {}
       try { unpatchMentions?.(); } catch {}
       try { unpatchMentionTags?.(); } catch {}
@@ -3622,6 +3659,7 @@
       unpatchFolder = null;
       unpatchFolderBG = null;
       unpatchChannelUnread = null;
+      unpatchChannelUnreadDirect = null;
       unpatchMessageRowManager = null;
       unpatchMentions = null;
       unpatchMentionTags = null;
