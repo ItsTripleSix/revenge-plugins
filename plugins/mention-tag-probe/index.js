@@ -37,7 +37,7 @@
   let activeMentionRows = [];
   let internalNativeUpdate = false;
   const animationEpoch = Date.now();
-  const FRAME_MS = 60;
+  const FRAME_MS = 33;
 
   function normalizeHex(value, fallback) {
     let text = String(value ?? "").trim();
@@ -293,8 +293,8 @@
 
     return React.createElement(RN.ScrollView, { contentContainerStyle: page },
       React.createElement(RN.View, { style: card },
-        React.createElement(RN.Text, { style: title }, "Mention Tag Probe v7"),
-        React.createElement(RN.Text, { style: text }, "Animated Spectrum now refreshes mention rows at about 16 FPS instead of about 8 FPS for a visibly smoother native color sweep."),
+        React.createElement(RN.Text, { style: title }, "Mention Tag Probe v8"),
+        React.createElement(RN.Text, { style: text }, "Animated Spectrum now refreshes mention rows at about 30 FPS to test whether Discord's native row rebuild can look genuinely smooth."),
       ),
       React.createElement(RN.View, { style: card },
         React.createElement(RN.Text, { style: label }, "Text mode"),
@@ -340,7 +340,7 @@
       syncAnimationTimer();
       try {
         const ok = !!unpatchAst && !!unpatchNativeRows;
-        showToast?.(ok ? "Mention probe v7 loaded" : "Mention probe v7: native hook unavailable");
+        showToast?.(ok ? "Mention probe v8 loaded" : "Mention probe v8: native hook unavailable");
       } catch {}
     },
 
