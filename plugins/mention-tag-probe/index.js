@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const { after } = vendetta.patcher;
+  const { after, before } = vendetta.patcher;
   const { findByProps } = vendetta.metro;
   const { React, ReactNative: RN } = vendetta.metro.common;
   const storage = vendetta.plugin.storage;
@@ -14,6 +14,11 @@
 
   const NativeChatUtils = (() => {
     try { return findByProps("updateRows", "scrollToBottom", "scrollIntoView"); }
+    catch { return null; }
+  })();
+
+  const SelectedChannelStore = (() => {
+    try { return findByProps("getChannelId", "getVoiceChannelId", "getCurrentlySelectedChannelId"); }
     catch { return null; }
   })();
 
@@ -30,11 +35,22 @@
     try { if (storage[key] == null) storage[key] = value; } catch {}
   }
 
+  // v9 could keep stale native rows when Discord reused the same chat view for
+  // another channel. Do not auto-resume animation after updating into this fix.
+  try {
+    if (storage.safetyResetVersion !== 10) {
+      storage.mode = "gradient";
+      storage.safetyResetVersion = 10;
+    }
+  } catch {}
+
   let unpatchAst = null;
   let unpatchNativeRows = null;
   let animationTimer = null;
   let appStateSubscription = null;
+  let selectedChannelListener = null;
   let activeChatRef = null;
+  let activeChannelId = null;
   const activeMentionRows = new Map();
   let internalNativeUpdate = false;
   const animationEpoch = Date.now();
@@ -80,6 +96,34 @@
 
   function intHex(value) {
     return `#${Number(value >>> 0).toString(16).padStart(6, "0").slice(-6)}`.toUpperCase();
+  }
+
+  function selectedChannelId() {
+    try {
+      const id = SelectedChannelStore?.getChannelId?.()
+        ?? SelectedChannelStore?.getCurrentlySelectedChannelId?.();
+      return id == null ? null : String(id);
+    } catch {
+      return null;
+    }
+  }
+
+  function rowChannelId(row) {
+    const id = row?.message?.channelId
+      ?? row?.message?.channel_id
+      ?? row?.channelId
+      ?? row?.channel_id;
+    return id == null ? null : String(id);
+  }
+
+  function rowMessageId(row) {
+    const id = row?.message?.id ?? row?.messageId ?? row?.id;
+    return id == null ? null : String(id);
+  }
+
+  function cloneRow(row) {
+    try { return JSON.parse(JSON.stringify(row)); }
+    catch { return null; }
   }
 
   function applyAnimatedMentionStyle(node, now = Date.now()) {
@@ -172,11 +216,17 @@
     }
   }
 
-  function rowKey(row, fallbackIndex) {
-    const id = row?.message?.id ?? row?.messageId ?? row?.id;
-    if (id != null) return `m:${id}`;
-    const index = row?.index ?? fallbackIndex;
-    return index != null ? `i:${index}` : null;
+  function stopAnimationTimer() {
+    if (!animationTimer) return;
+    clearInterval(animationTimer);
+    animationTimer = null;
+  }
+
+  function resetTrackedRows(nextChannelId = null) {
+    stopAnimationTimer();
+    activeMentionRows.clear();
+    activeChatRef = null;
+    activeChannelId = nextChannelId == null ? null : String(nextChannelId);
   }
 
   function trimTrackedRows() {
@@ -187,33 +237,76 @@
     }
   }
 
+  function shiftTrackedIndexes(changeType, index) {
+    if (!Number.isInteger(index)) return;
+
+    if (changeType === 1) {
+      for (const record of activeMentionRows.values()) {
+        const current = record?.row?.index;
+        if (Number.isInteger(current) && current >= index) record.row.index = current + 1;
+      }
+      return;
+    }
+
+    if (changeType === 3) {
+      for (const [key, record] of Array.from(activeMentionRows.entries())) {
+        const current = record?.row?.index;
+        if (!Number.isInteger(current)) continue;
+        if (current === index) activeMentionRows.delete(key);
+        else if (current > index) record.row.index = current - 1;
+      }
+    }
+  }
+
   function captureMentionRows(chatRef, packet) {
     if (internalNativeUpdate || !chatRef || !Array.isArray(packet?.rows)) return;
 
-    const chatChanged = activeChatRef != null && activeChatRef !== chatRef;
-    const looksLikeFreshLoad = packet.rows.length >= 4 && packet.rows.some(row =>
-      row?.changeType === 1 && (row?.index == null || row.index <= 1)
-    );
+    const selected = selectedChannelId();
+    if (!selected) {
+      resetTrackedRows(null);
+      return;
+    }
 
-    if (chatChanged || looksLikeFreshLoad) activeMentionRows.clear();
+    if (activeChannelId !== selected) resetTrackedRows(selected);
+
+    const messageRows = packet.rows.filter(row => row?.message);
+    const packetChannelIds = new Set(messageRows.map(rowChannelId).filter(Boolean));
+
+    // Never let rows from a channel that is no longer selected become an
+    // animation source. Discord often reuses the same native chat ref.
+    if (packetChannelIds.size && (!packetChannelIds.has(selected) || packetChannelIds.size > 1)) {
+      resetTrackedRows(selected);
+      return;
+    }
+
     activeChatRef = chatRef;
 
-    for (let i = 0; i < packet.rows.length; i++) {
-      const row = packet.rows[i];
-      if (!row || (row.changeType !== 1 && row.changeType !== 2)) continue;
+    const insertCount = packet.rows.reduce((n, row) => n + (row?.changeType === 1 ? 1 : 0), 0);
+    const freshBatch = insertCount >= 4;
+    if (freshBatch) activeMentionRows.clear();
 
-      const key = rowKey(row, i);
-      if (!key) continue;
+    for (const row of packet.rows) {
+      if (!row) continue;
 
-      const mentions = collectMentions(row);
+      if (!freshBatch && (row.changeType === 1 || row.changeType === 3)) {
+        shiftTrackedIndexes(row.changeType, row.index);
+      }
+
+      if (row.changeType !== 1 && row.changeType !== 2) continue;
+      if (rowChannelId(row) !== selected) continue;
+
+      const messageId = rowMessageId(row);
+      if (!messageId) continue;
+
+      const copy = cloneRow(row);
+      if (!copy) continue;
+      const mentions = collectMentions(copy);
+
       if (mentions.length) {
-        // Re-inserting the key keeps recently touched rows at the end of the map
-        // so the safety cap removes truly older captures first.
-        activeMentionRows.delete(key);
-        activeMentionRows.set(key, { row, mentions });
-      } else {
-        // If a message update removes its mention, stop animating that row.
-        activeMentionRows.delete(key);
+        activeMentionRows.delete(messageId);
+        activeMentionRows.set(messageId, { row: copy, mentions });
+      } else if (row.changeType === 2) {
+        activeMentionRows.delete(messageId);
       }
     }
 
@@ -224,7 +317,7 @@
   function patchNativeRowDispatch() {
     if (!NativeChatUtils || typeof NativeChatUtils.updateRows !== "function") return null;
     try {
-      return after("updateRows", NativeChatUtils, args => {
+      return before("updateRows", NativeChatUtils, args => {
         try { captureMentionRows(args?.[0], args?.[1]); } catch {}
       });
     } catch {
@@ -239,15 +332,32 @@
   function pushAnimatedRows() {
     if (storage.mode !== "animated" || !activeChatRef || !activeMentionRows.size || !isAppActive()) return;
 
+    const selected = selectedChannelId();
+    if (!selected || selected !== activeChannelId) {
+      resetTrackedRows(selected);
+      return;
+    }
+
     const now = Date.now();
     const updates = [];
-    for (const record of activeMentionRows.values()) {
+
+    for (const [key, record] of Array.from(activeMentionRows.entries())) {
       try {
+        if (rowChannelId(record.row) !== selected || !Number.isInteger(record.row?.index)) {
+          activeMentionRows.delete(key);
+          continue;
+        }
         for (const node of record.mentions) applyAnimatedMentionStyle(node, now);
         updates.push({ ...record.row, changeType: 2 });
-      } catch {}
+      } catch {
+        activeMentionRows.delete(key);
+      }
     }
-    if (!updates.length) return;
+
+    if (!updates.length) {
+      syncAnimationTimer();
+      return;
+    }
 
     try {
       internalNativeUpdate = true;
@@ -261,23 +371,24 @@
       });
     } catch (error) {
       try { console.error("[MentionTagProbe] native animation refresh failed", error); } catch {}
+      resetTrackedRows(selected);
     } finally {
       internalNativeUpdate = false;
     }
   }
 
-  function stopAnimationTimer() {
-    if (!animationTimer) return;
-    clearInterval(animationTimer);
-    animationTimer = null;
-  }
-
   function syncAnimationTimer() {
-    const shouldRun = storage.mode === "animated" && activeChatRef && activeMentionRows.size > 0 && isAppActive();
+    const shouldRun = storage.mode === "animated"
+      && activeChatRef
+      && activeMentionRows.size > 0
+      && activeChannelId === selectedChannelId()
+      && isAppActive();
+
     if (!shouldRun) {
       stopAnimationTimer();
       return;
     }
+
     if (!animationTimer) animationTimer = setInterval(pushAnimatedRows, FRAME_MS);
   }
 
@@ -291,10 +402,26 @@
   }
 
   function removeAppStateListener() {
-    try {
-      appStateSubscription?.remove?.();
-    } catch {}
+    try { appStateSubscription?.remove?.(); } catch {}
     appStateSubscription = null;
+  }
+
+  function installSelectedChannelListener() {
+    if (!SelectedChannelStore?.addChangeListener) return;
+    const listener = () => {
+      const selected = selectedChannelId();
+      if (selected !== activeChannelId) resetTrackedRows(selected);
+    };
+    try {
+      SelectedChannelStore.addChangeListener(listener);
+      selectedChannelListener = listener;
+    } catch { selectedChannelListener = null; }
+  }
+
+  function removeSelectedChannelListener() {
+    if (!selectedChannelListener) return;
+    try { SelectedChannelStore?.removeChangeListener?.(selectedChannelListener); } catch {}
+    selectedChannelListener = null;
   }
 
   function Settings() {
@@ -317,11 +444,16 @@
           key: option.value,
           onPress: () => { onChange(option.value); rerender(); },
           style: {
-            paddingVertical: 8, paddingHorizontal: 11, borderRadius: 8, borderWidth: 1,
+            paddingVertical: 8,
+            paddingHorizontal: 11,
+            borderRadius: 8,
+            borderWidth: 1,
             borderColor: value === option.value ? "#FFFFFF" : "#4E5058",
             backgroundColor: value === option.value ? "#FFFFFF18" : "#00000000",
           },
-        }, React.createElement(RN.Text, { style: { color: "#F2F3F5", fontWeight: value === option.value ? "700" : "500" } }, option.label)))
+        }, React.createElement(RN.Text, {
+          style: { color: "#F2F3F5", fontWeight: value === option.value ? "700" : "500" },
+        }, option.label)))
       );
     }
 
@@ -333,10 +465,18 @@
           autoCapitalize: "characters",
           autoCorrect: false,
           onChangeText(value) { storage[storageKey] = value; rerender(); },
-          onEndEditing() { storage[storageKey] = normalizeHex(storage[storageKey], fallback); rerender(); },
+          onEndEditing() {
+            storage[storageKey] = normalizeHex(storage[storageKey], fallback);
+            rerender();
+          },
           style: {
-            color: "#FFFFFF", backgroundColor: "#000000", borderWidth: 1,
-            borderColor: "#4E5058", borderRadius: 8, paddingHorizontal: 10, paddingVertical: 8,
+            color: "#FFFFFF",
+            backgroundColor: "#000000",
+            borderWidth: 1,
+            borderColor: "#4E5058",
+            borderRadius: 8,
+            paddingHorizontal: 10,
+            paddingVertical: 8,
           },
         })
       );
@@ -344,8 +484,8 @@
 
     return React.createElement(RN.ScrollView, { contentContainerStyle: page },
       React.createElement(RN.View, { style: card },
-        React.createElement(RN.Text, { style: title }, "Mention Tag Probe v9"),
-        React.createElement(RN.Text, { style: text }, "Animation is back to the lighter ~16 FPS rate. Mention rows are now tracked by message instead of replacing the previous capture, so multiple tagged messages can animate together. The timer fully pauses while Discord is backgrounded."),
+        React.createElement(RN.Text, { style: title }, "Mention Tag Probe v10"),
+        React.createElement(RN.Text, { style: text }, "Safety hotfix: animation is pinned to the currently selected channel and stale native rows are discarded immediately on channel changes. Animation remains at the lighter ~16 FPS rate."),
       ),
       React.createElement(RN.View, { style: card },
         React.createElement(RN.Text, { style: label }, "Text mode"),
@@ -378,7 +518,7 @@
             ],
             onChange: value => setValue("speed", value),
           }),
-          React.createElement(RN.Text, { style: text }, "The text gradient and Discord's derived mention highlight move together through the hue wheel."),
+          React.createElement(RN.Text, { style: text }, "All tracked mention rows in the selected channel share one batched animation update."),
         ) : null,
       ),
     );
@@ -386,24 +526,28 @@
 
   return {
     onLoad() {
+      activeChannelId = selectedChannelId();
       installAppStateListener();
+      installSelectedChannelListener();
       unpatchAst = patchNativeMentionAst();
       unpatchNativeRows = patchNativeRowDispatch();
       syncAnimationTimer();
       try {
-        const ok = !!unpatchAst && !!unpatchNativeRows;
-        showToast?.(ok ? "Mention probe v9 loaded" : "Mention probe v9: native hook unavailable");
+        const ok = !!unpatchAst && !!unpatchNativeRows && !!SelectedChannelStore;
+        showToast?.(ok ? "Mention probe v10 loaded - animation reset for safety" : "Mention probe v10: native hook unavailable");
       } catch {}
     },
 
     onUnload() {
       stopAnimationTimer();
       removeAppStateListener();
+      removeSelectedChannelListener();
       try { unpatchAst?.(); } catch {}
       try { unpatchNativeRows?.(); } catch {}
       unpatchAst = null;
       unpatchNativeRows = null;
       activeChatRef = null;
+      activeChannelId = null;
       activeMentionRows.clear();
     },
 
