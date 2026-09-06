@@ -1,0 +1,12 @@
+name: TT Actions test
+
+on:
+  push:
+    paths:
+      - '.github/workflows/tt-actions-test.yml'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "actions-ok"
