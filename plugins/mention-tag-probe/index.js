@@ -1,97 +1,65 @@
 (() => {
   "use strict";
 
-  const { after } = vendetta.patcher;
+  const { before } = vendetta.patcher;
   const { findByProps } = vendetta.metro;
-  const { React, ReactNative: RN } = vendetta.metro.common;
+  const { ReactNative: RN } = vendetta.metro.common;
+  const showToast = vendetta.ui?.toasts?.showToast;
 
-  const MarkupUtils = (() => {
-    try { return findByProps("combineAndInjectMentionRule", "createReactRules"); }
+  const TextModule = (() => {
+    try { return findByProps("Text", "Heading", "TextStyleSheet"); }
     catch { return null; }
   })();
 
-  const cleanups = [];
-  const wrappedRules = new WeakMap();
+  let unpatchText = null;
 
   function flatten(style) {
     try { return RN.StyleSheet?.flatten?.(style) ?? {}; }
     catch { return {}; }
   }
 
-  function styleMentionElement(element) {
-    if (!element?.props) return element;
-
-    const baseStyles = element.props.styles ?? {};
-    const mentionBase = flatten(baseStyles.mention);
-    const nextStyles = {
-      ...baseStyles,
-      mention: {
-        ...mentionBase,
-        color: "#00FFFF",
-        backgroundColor: "#FF00FF",
-        borderRadius: mentionBase.borderRadius ?? 3,
-        paddingHorizontal: mentionBase.paddingHorizontal ?? 2,
-      },
-    };
-
-    const nextState = {
-      ...(element.props.state ?? {}),
-      textColor: "#00FFFF",
-    };
-
-    try {
-      return React.cloneElement(element, {
-        styles: nextStyles,
-        state: nextState,
-      });
-    } catch {
-      return element;
-    }
+  function looksLikeInlineMention(style) {
+    const flat = flatten(style);
+    return flat
+      && flat.backgroundColor != null
+      && Number(flat.borderRadius) === 3
+      && Number(flat.paddingHorizontal) === 2;
   }
 
-  function patchRules(rules) {
-    const rule = rules?.mention;
-    if (!rule || typeof rule.react !== "function") return;
-    if (wrappedRules.has(rule)) return;
+  function patchTextRenderer() {
+    const target = TextModule?.Text;
+    if (!target || typeof target.render !== "function") return null;
 
-    const original = rule.react;
-    const wrapped = function (...args) {
-      let element;
-      try { element = original.apply(this, args); }
-      catch { return original.apply(this, args); }
-      return styleMentionElement(element);
-    };
-
-    wrappedRules.set(rule, { original, wrapped });
-    try { rule.react = wrapped; }
-    catch { return; }
-
-    cleanups.push(() => {
-      try {
-        const info = wrappedRules.get(rule);
-        if (info && rule.react === info.wrapped) rule.react = info.original;
-      } catch {}
-    });
+    try {
+      return before("render", target, args => {
+        try {
+          const props = args?.[0];
+          if (!props || !looksLikeInlineMention(props.style)) return;
+          props.style = [
+            props.style,
+            {
+              color: "#00FFFF",
+              backgroundColor: "#FF00FF",
+              borderRadius: 3,
+              paddingHorizontal: 2,
+            },
+          ];
+        } catch {}
+      });
+    } catch {
+      return null;
+    }
   }
 
   return {
     onLoad() {
-      try { patchRules(MarkupUtils?.defaultRules); } catch {}
-
-      if (MarkupUtils && typeof MarkupUtils.createReactRules === "function") {
-        try {
-          cleanups.push(after("createReactRules", MarkupUtils, (_args, result) => {
-            try { patchRules(result); } catch {}
-            return result;
-          }));
-        } catch {}
-      }
+      unpatchText = patchTextRenderer();
+      try { showToast?.(unpatchText ? "Mention probe v2 loaded" : "Mention probe v2: Text hook unavailable"); } catch {}
     },
 
     onUnload() {
-      while (cleanups.length) {
-        try { cleanups.pop()?.(); } catch {}
-      }
+      try { unpatchText?.(); } catch {}
+      unpatchText = null;
     },
   };
 })();
