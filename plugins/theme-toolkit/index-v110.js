@@ -156,12 +156,16 @@
     autoPaletteSeed: "#B026FF",
     autoPaletteStyle: "spectrum",
     autoPaletteScope: "all",
+    contextAutoPaletteEnabled: false,
+    contextAutoPaletteCache: {},
+    contextAutoPaletteBase: null,
     toolkitProfiles: [],
   };
   const PROFILE_SETTING_KEYS = Object.freeze(Object.keys(APPEARANCE_DEFAULTS));
   const PROFILE_LIMIT = 20;
   const PROFILE_BACKUP_FORMAT = "theme-toolkit-profile-backup";
   const PROFILE_BACKUP_VERSION = 1;
+  const CONTEXT_PALETTE_LIMIT = 100;
 
   // Retire the exact v0.6 visual-test palette once. Any changed value means the
   // user customized it, so the migration leaves the entire set untouched.
@@ -248,6 +252,10 @@
   let unpatchHeaderIconButton = null;
   let unpatchGuildWrapperOverlay = null;
   let appStateSubscription = null;
+  let contextStoreSubscriptions = [];
+  let contextAutoPaletteTimer = null;
+  let contextAutoPaletteRequest = 0;
+  let activeContextPaletteSignature = "";
   const visualSubscribers = new Set();
   const colorSubscribers = new Set();
   let colorTimer = null;
@@ -553,6 +561,169 @@
     })();
     const colors = await ImageManager.getDominantColors(source);
     return chooseImageSeed(colors);
+  }
+  function storedContextPaletteCache() {
+    const raw = storage.contextAutoPaletteCache;
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+    const entries = Object.entries(raw).flatMap(([key, value]) => {
+      const seed = stripAlpha(value?.seed);
+      const url = validRemoteImageURL(value?.url);
+      if (!key || !seed || !url) return [];
+      return [[key, {
+        key,
+        type: String(value?.type ?? "context"),
+        label: String(value?.label ?? "Saved context").slice(0, 100),
+        sourceLabel: String(value?.sourceLabel ?? "image").slice(0, 60),
+        url,
+        seed,
+        updatedAt: Number.isFinite(value?.updatedAt) ? value.updatedAt : 0,
+      }]];
+    });
+    entries.sort((left, right) => right[1].updatedAt - left[1].updatedAt);
+    return Object.fromEntries(entries.slice(0, CONTEXT_PALETTE_LIMIT));
+  }
+  function cachedContextPalette(context) {
+    if (!context?.key) return null;
+    return storedContextPaletteCache()[context.key] ?? null;
+  }
+  function writeContextPalette(context, seedValue) {
+    const seed = stripAlpha(seedValue);
+    const url = validRemoteImageURL(context?.url);
+    if (!context?.key || !seed || !url) return null;
+    const record = {
+      key: context.key,
+      type: context.type,
+      label: context.label,
+      sourceLabel: context.sourceLabel,
+      url,
+      seed,
+      updatedAt: Date.now(),
+    };
+    const cache = storedContextPaletteCache();
+    delete cache[context.key];
+    storage.contextAutoPaletteCache = Object.fromEntries([
+      [context.key, record],
+      ...Object.entries(cache),
+    ].slice(0, CONTEXT_PALETTE_LIMIT));
+    return record;
+  }
+  function contextBaseAppearance() {
+    const raw = storage.contextAutoPaletteBase;
+    return raw && typeof raw === "object" && !Array.isArray(raw)
+      ? materializeAppearanceValues(raw)
+      : null;
+  }
+  function restoreContextBaseAppearance() {
+    const base = contextBaseAppearance();
+    if (!base) return false;
+    if (activeContextPaletteSignature !== "base") {
+      applyAppearanceValues(base);
+      activeContextPaletteSignature = "base";
+      refreshToolkitUI();
+    }
+    return true;
+  }
+  async function syncContextAutoPalette(options = {}) {
+    if (storage.contextAutoPaletteEnabled !== true) return { status: "disabled" };
+    const request = ++contextAutoPaletteRequest;
+    const context = currentContextImage();
+    if (!context.key || !context.url) {
+      restoreContextBaseAppearance();
+      return { status: "fallback", context };
+    }
+    const style = storage.autoPaletteStyle;
+    const scope = storage.autoPaletteScope;
+    const cached = cachedContextPalette(context);
+    let seed = !options.forceExtract && cached?.url === context.url ? cached.seed : null;
+    let extracted = false;
+    if (!seed) {
+      try { seed = await extractImageSeed(context.url); }
+      catch (error) {
+        try { console.error("[ThemeToolkit] automatic context color extraction failed", error); } catch {}
+      }
+      if (request !== contextAutoPaletteRequest || storage.contextAutoPaletteEnabled !== true) return { status: "stale", context };
+      const latest = currentContextImage();
+      if (latest.key !== context.key || latest.url !== context.url) return { status: "stale", context };
+      if (seed) {
+        extracted = true;
+        writeContextPalette(context, seed);
+      }
+    }
+    const palette = generateAutoPalette(seed, style);
+    const values = autoPaletteAppearanceValues(palette, scope);
+    if (!seed || !values) {
+      restoreContextBaseAppearance();
+      return { status: "fallback", context };
+    }
+    const signature = `${context.key}|${context.url}|${seed}|${style}|${scope}`;
+    if (signature !== activeContextPaletteSignature || options.forceApply) {
+      storage.autoPaletteSeed = seed;
+      const base = contextBaseAppearance();
+      if (base) applyAppearanceValues(base);
+      applyAppearanceValues(values);
+      activeContextPaletteSignature = signature;
+      refreshToolkitUI();
+    }
+    if (options.notify) toast(`Matched ${context.label} • ${seed}`);
+    return { status: "applied", context, seed, extracted };
+  }
+  function cancelContextAutoPaletteWork() {
+    contextAutoPaletteRequest++;
+    if (contextAutoPaletteTimer != null) clearTimeout(contextAutoPaletteTimer);
+    contextAutoPaletteTimer = null;
+  }
+  function scheduleContextAutoPaletteSync(delay = 100) {
+    if (storage.contextAutoPaletteEnabled !== true) return;
+    if (contextAutoPaletteTimer != null) clearTimeout(contextAutoPaletteTimer);
+    contextAutoPaletteTimer = setTimeout(() => {
+      contextAutoPaletteTimer = null;
+      void syncContextAutoPalette().catch(error => {
+        try { console.error("[ThemeToolkit] automatic context palette failed", error); } catch {}
+      });
+    }, Math.max(0, delay));
+  }
+  function subscribeContextStore(store, listener) {
+    if (typeof store?.addChangeListener !== "function") return null;
+    try {
+      const subscription = store.addChangeListener(listener);
+      if (typeof subscription === "function") return subscription;
+      if (typeof subscription?.remove === "function") return () => subscription.remove();
+      if (typeof store.removeChangeListener === "function") return () => store.removeChangeListener(listener);
+    } catch {}
+    return null;
+  }
+  function removeContextStoreListeners() {
+    cancelContextAutoPaletteWork();
+    for (const unsubscribe of contextStoreSubscriptions) {
+      try { unsubscribe?.(); } catch {}
+    }
+    contextStoreSubscriptions = [];
+  }
+  function installContextStoreListeners() {
+    removeContextStoreListeners();
+    const listener = () => scheduleContextAutoPaletteSync(100);
+    contextStoreSubscriptions = [SelectedGuildStore, SelectedChannelStore]
+      .map(store => subscribeContextStore(store, listener))
+      .filter(Boolean);
+    if (storage.contextAutoPaletteEnabled === true) scheduleContextAutoPaletteSync(0);
+  }
+  async function enableContextAutoPalette(options = {}) {
+    if (storage.contextAutoPaletteEnabled !== true) {
+      storage.contextAutoPaletteBase = materializeAppearanceValues(appearanceSnapshot());
+      storage.contextAutoPaletteEnabled = true;
+    } else if (!contextBaseAppearance()) {
+      storage.contextAutoPaletteBase = materializeAppearanceValues(appearanceSnapshot());
+    }
+    activeContextPaletteSignature = "";
+    return syncContextAutoPalette({ notify: options.notify === true, forceApply: true });
+  }
+  function disableContextAutoPalette(restore = true) {
+    storage.contextAutoPaletteEnabled = false;
+    cancelContextAutoPaletteWork();
+    if (restore) restoreContextBaseAppearance();
+    storage.contextAutoPaletteBase = null;
+    activeContextPaletteSignature = "";
+    refreshToolkitUI();
   }
   function generateAutoPalette(seedValue, styleValue = "spectrum") {
     const seed = stripAlpha(seedValue);
@@ -1934,6 +2105,7 @@
     for (const fn of [...colorSubscribers]) { try { fn(now); } catch {} }
     ensureColorTimer();
     resumeSharedMotionClocks();
+    scheduleContextAutoPaletteSync(0);
   }
   function installAppStateListener() {
     try {
@@ -2618,6 +2790,8 @@
     const profiles = storedProfiles();
     const currentAppearance = appearanceSnapshot();
     const contextImage = currentContextImage();
+    const contextPaletteCache = storedContextPaletteCache();
+    const currentContextPalette = contextImage.key ? contextPaletteCache[contextImage.key] ?? null : null;
     const autoPalette = generateAutoPalette(storage.autoPaletteSeed, storage.autoPaletteStyle);
     const page = { padding: 16, gap: 14 };
     const card = { backgroundColor: "#111214", borderRadius: 12, padding: 14, gap: 10 };
@@ -2732,6 +2906,7 @@
         {
           text: "Load & reload",
           onPress() {
+            if (storage.contextAutoPaletteEnabled === true) disableContextAutoPalette(false);
             applyValues(profile.values);
             if (scheduleDiscordReload()) toast(`Loading ${profile.name}…`);
             else toast(`Loaded ${profile.name}. Restart Discord to finish applying it.`);
@@ -2743,11 +2918,62 @@
       const palette = generateAutoPalette(storage.autoPaletteSeed, storage.autoPaletteStyle);
       if (!palette) { toast("Choose a valid palette seed color"); return; }
       const values = autoPaletteAppearanceValues(palette, storage.autoPaletteScope);
+      if (storage.contextAutoPaletteEnabled === true) disableContextAutoPalette(false);
       applyValues(values);
       if (scheduleDiscordReload()) toast(storage.autoPaletteScope === "all"
         ? "Applying palette to the whole Toolkit…"
         : "Applying palette to UI accents…");
       else toast("Palette saved. Restart Discord to finish applying it.");
+    }
+    async function toggleAutomaticContextPalettes(enabled) {
+      if (enabled && typeof ImageManager?.getDominantColors !== "function") {
+        toast("Discord's native image color extractor is unavailable on this build");
+        return;
+      }
+      setContextProbeBusy(true);
+      try {
+        if (!enabled) {
+          disableContextAutoPalette(true);
+          setContextProbeStatus("Automatic switching is off. Your previous appearance was restored.");
+          toast("Automatic server / DM palettes off");
+          return;
+        }
+        setContextProbeStatus("Matching the current server or DM…");
+        const result = await enableContextAutoPalette({ notify: true });
+        if (result.status === "applied") setContextProbeStatus(`${result.context.label} • automatic • ${result.seed}`);
+        else if (result.status === "fallback") setContextProbeStatus("No usable image here. Your base appearance is active.");
+        else if (result.status === "stale") {
+          setContextProbeStatus("The selected context changed. Matching the new one…");
+          scheduleContextAutoPaletteSync(0);
+        }
+      } finally {
+        setContextProbeBusy(false);
+        forceUpdate();
+      }
+    }
+    async function refreshAutomaticContextPalette() {
+      if (storage.contextAutoPaletteEnabled !== true) return;
+      setContextProbeBusy(true);
+      setContextProbeStatus("Refreshing this context's image colors…");
+      try {
+        const result = await syncContextAutoPalette({ forceExtract: true, forceApply: true, notify: true });
+        if (result.status === "applied") setContextProbeStatus(`${result.context.label} • automatic • ${result.seed}`);
+        else setContextProbeStatus("No usable image here. Your base appearance is active.");
+      } finally {
+        setContextProbeBusy(false);
+        forceUpdate();
+      }
+    }
+    function setAutoPaletteOption(key, value) {
+      storage[key] = value;
+      forceUpdate();
+      refreshToolkitUI();
+      if (storage.contextAutoPaletteEnabled === true) {
+        activeContextPaletteSignature = "";
+        void syncContextAutoPalette({ forceApply: true }).then(() => forceUpdate()).catch(error => {
+          try { console.error("[ThemeToolkit] automatic palette option update failed", error); } catch {}
+        });
+      }
     }
     async function useCurrentContextImage() {
       if (!contextImage.url) { toast(`No ${contextImage.sourceLabel} is available here`); return; }
@@ -2765,7 +2991,13 @@
           return;
         }
         set("autoPaletteSeed", seed);
-        setContextProbeStatus(`${contextImage.label} • ${seed}`);
+        if (storage.contextAutoPaletteEnabled === true) {
+          writeContextPalette(contextImage, seed);
+          await syncContextAutoPalette({ forceApply: true });
+          setContextProbeStatus(`${contextImage.label} • automatic • ${seed}`);
+        } else {
+          setContextProbeStatus(`${contextImage.label} • ${seed}`);
+        }
         toast(`Auto Palette seed: ${seed}`);
       } catch (error) {
         try { console.error("[ThemeToolkit] context image color extraction failed", error); } catch {}
@@ -2993,12 +3225,12 @@
 
     const activeThemeText = theme
       ? `${theme.data?.name ?? "Unnamed theme"}${themeCfg.hasMetadata ? " • Toolkit metadata" : " • automatic mapping"}`
-      : "No custom theme active • automatic styling is off";
+      : "No custom theme active • Discord defaults available";
     return React.createElement(RN.ScrollView, { contentContainerStyle: page },
       React.createElement(RN.View, { style: card },
-        React.createElement(RN.Text, { style: title }, "Theme Toolkit v1.1.0 TEST"),
+        React.createElement(RN.Text, { style: title }, "Theme Toolkit v1.1.1 TEST"),
         React.createElement(RN.Text, { style: text }, activeThemeText),
-        React.createElement(RN.Text, { style: text }, "Generate a coordinated palette from one color, save the complete Toolkit appearance as a named profile, then apply or restore it with a Discord reload."),
+        React.createElement(RN.Text, { style: text }, "Generate a coordinated palette manually or match each server and DM from its image. Themes with Toolkit metadata, ordinary themes, and Discord without a custom theme are all supported."),
       ),
       React.createElement(RN.View, { style: card },
         React.createElement(RN.Text, { style: title }, "Auto Palette"),
@@ -3011,11 +3243,25 @@
             style: { width: 72, height: 72, borderRadius: 16, backgroundColor: "#000000" },
           }) : React.createElement(RN.Text, { style: text }, "No usable image is available in the currently selected context."),
           React.createElement(RN.Text, { style: text }, `Native color extractor: ${typeof ImageManager?.getDominantColors === "function" ? "FOUND" : "MISSING"}`),
+          React.createElement(ToggleRow, {
+            labelText: "Automatic server / DM palettes",
+            value: storage.contextAutoPaletteEnabled === true,
+            onChange: value => void toggleAutomaticContextPalettes(value),
+          }),
+          React.createElement(RN.Text, { style: text }, storage.contextAutoPaletteEnabled === true
+            ? `${Object.keys(contextPaletteCache).length} context${Object.keys(contextPaletteCache).length === 1 ? "" : "s"} cached. Moving between servers and DMs switches palettes automatically. Loading a saved profile or applying a manual palette turns this off.`
+            : "When enabled, each server icon or DM avatar gets its own cached palette. A missing image restores the appearance you had before enabling it."),
+          currentContextPalette ? React.createElement(RN.Text, { style: text }, `Current cache: ${currentContextPalette.seed}`) : null,
           React.createElement(ActionButton, {
             labelText: contextProbeBusy ? "Analyzing…" : "Use current image as seed",
             onPress: () => void useCurrentContextImage(),
             disabled: contextProbeBusy || !contextImage.url || typeof ImageManager?.getDominantColors !== "function",
           }),
+          storage.contextAutoPaletteEnabled === true ? React.createElement(ActionButton, {
+            labelText: contextProbeBusy ? "Refreshing…" : "Refresh this context's colors",
+            onPress: () => void refreshAutomaticContextPalette(),
+            disabled: contextProbeBusy || !contextImage.url || typeof ImageManager?.getDominantColors !== "function",
+          }) : null,
           contextProbeStatus ? React.createElement(RN.Text, { style: text }, contextProbeStatus) : null,
         ),
         React.createElement(ColorInput, { labelText: "Seed color", storageKey: "autoPaletteSeed" }),
@@ -3027,7 +3273,7 @@
             { value: "analogous", label: "Analogous" },
             { value: "monochrome", label: "Monochrome" },
           ],
-          onChange: value => set("autoPaletteStyle", value),
+          onChange: value => setAutoPaletteOption("autoPaletteStyle", value),
         }),
         React.createElement(RN.Text, { style: label }, "Apply to"),
         React.createElement(Choice, {
@@ -3036,7 +3282,7 @@
             { value: "ui", label: "UI accents only" },
             { value: "all", label: "Whole Toolkit" },
           ],
-          onChange: value => set("autoPaletteScope", value),
+          onChange: value => setAutoPaletteOption("autoPaletteScope", value),
         }),
         React.createElement(PalettePreview, { palette: autoPalette }),
         React.createElement(RN.Text, { style: text }, storage.autoPaletteScope === "all"
@@ -3211,6 +3457,7 @@
   return {
     onLoad() {
       installAppStateListener();
+      installContextStoreListeners();
       unpatchFolder = patchFolderRenderer();
       unpatchFolderBG = patchExpandedFolderBackground();
       unpatchMentions = patchMentionHighlights();
@@ -3294,6 +3541,7 @@
       unpatchLegacyHeaderIcon = null;
       unpatchHeaderIconButton = null;
       unpatchGuildWrapperOverlay = null;
+      removeContextStoreListeners();
       removeAppStateListener();
       visualSubscribers.clear();
       colorSubscribers.clear();
