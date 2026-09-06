@@ -37,6 +37,7 @@
   let activeMentionRows = [];
   let internalNativeUpdate = false;
   const animationEpoch = Date.now();
+  const FRAME_MS = 60;
 
   function normalizeHex(value, fallback) {
     let text = String(value ?? "").trim();
@@ -80,7 +81,8 @@
   }
 
   function applyAnimatedMentionStyle(node, now = Date.now()) {
-    const phase = (((now - animationEpoch) % speedMs()) + speedMs()) % speedMs() / speedMs();
+    const duration = speedMs();
+    const phase = (((now - animationEpoch) % duration) + duration) % duration / duration;
     const one = hsvInt(phase);
     const two = hsvInt(phase + 1 / 3);
     const three = hsvInt(phase + 2 / 3);
@@ -178,8 +180,6 @@
       if (mentions.length) found.push({ row, mentions });
     }
 
-    // A normal channel load sends a larger insert batch. If that batch has no
-    // mentions, clear the previous channel's captured rows.
     const looksLikeFreshLoad = packet.rows.length >= 4 && packet.rows.some(row => row?.changeType === 1);
     if (found.length || looksLikeFreshLoad) {
       activeChatRef = chatRef;
@@ -243,7 +243,7 @@
       stopAnimationTimer();
       return;
     }
-    if (!animationTimer) animationTimer = setInterval(pushAnimatedRows, 120);
+    if (!animationTimer) animationTimer = setInterval(pushAnimatedRows, FRAME_MS);
   }
 
   function Settings() {
@@ -293,8 +293,8 @@
 
     return React.createElement(RN.ScrollView, { contentContainerStyle: page },
       React.createElement(RN.View, { style: card },
-        React.createElement(RN.Text, { style: title }, "Mention Tag Probe v6"),
-        React.createElement(RN.Text, { style: text }, "Animated Spectrum is the first live native-row test. It updates only captured rows containing @mentions instead of refreshing the entire message list."),
+        React.createElement(RN.Text, { style: title }, "Mention Tag Probe v7"),
+        React.createElement(RN.Text, { style: text }, "Animated Spectrum now refreshes mention rows at about 16 FPS instead of about 8 FPS for a visibly smoother native color sweep."),
       ),
       React.createElement(RN.View, { style: card },
         React.createElement(RN.Text, { style: label }, "Text mode"),
@@ -327,7 +327,7 @@
             ],
             onChange: value => setValue("speed", value),
           }),
-          React.createElement(RN.Text, { style: text }, "The three native gradient colors rotate continuously around the hue wheel."),
+          React.createElement(RN.Text, { style: text }, "The text gradient and Discord's derived mention highlight move together through the hue wheel."),
         ) : null,
       ),
     );
@@ -340,7 +340,7 @@
       syncAnimationTimer();
       try {
         const ok = !!unpatchAst && !!unpatchNativeRows;
-        showToast?.(ok ? "Mention probe v6 loaded" : "Mention probe v6: native hook unavailable");
+        showToast?.(ok ? "Mention probe v7 loaded" : "Mention probe v7: native hook unavailable");
       } catch {}
     },
 
