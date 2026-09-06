@@ -33,11 +33,13 @@
   let unpatchAst = null;
   let unpatchNativeRows = null;
   let animationTimer = null;
+  let appStateSubscription = null;
   let activeChatRef = null;
-  let activeMentionRows = [];
+  const activeMentionRows = new Map();
   let internalNativeUpdate = false;
   const animationEpoch = Date.now();
-  const FRAME_MS = 33;
+  const FRAME_MS = 60;
+  const MAX_TRACKED_ROWS = 24;
 
   function normalizeHex(value, fallback) {
     let text = String(value ?? "").trim();
@@ -170,22 +172,52 @@
     }
   }
 
+  function rowKey(row, fallbackIndex) {
+    const id = row?.message?.id ?? row?.messageId ?? row?.id;
+    if (id != null) return `m:${id}`;
+    const index = row?.index ?? fallbackIndex;
+    return index != null ? `i:${index}` : null;
+  }
+
+  function trimTrackedRows() {
+    while (activeMentionRows.size > MAX_TRACKED_ROWS) {
+      const first = activeMentionRows.keys().next().value;
+      if (first == null) break;
+      activeMentionRows.delete(first);
+    }
+  }
+
   function captureMentionRows(chatRef, packet) {
     if (internalNativeUpdate || !chatRef || !Array.isArray(packet?.rows)) return;
 
-    const found = [];
-    for (const row of packet.rows) {
+    const chatChanged = activeChatRef != null && activeChatRef !== chatRef;
+    const looksLikeFreshLoad = packet.rows.length >= 4 && packet.rows.some(row =>
+      row?.changeType === 1 && (row?.index == null || row.index <= 1)
+    );
+
+    if (chatChanged || looksLikeFreshLoad) activeMentionRows.clear();
+    activeChatRef = chatRef;
+
+    for (let i = 0; i < packet.rows.length; i++) {
+      const row = packet.rows[i];
       if (!row || (row.changeType !== 1 && row.changeType !== 2)) continue;
+
+      const key = rowKey(row, i);
+      if (!key) continue;
+
       const mentions = collectMentions(row);
-      if (mentions.length) found.push({ row, mentions });
+      if (mentions.length) {
+        // Re-inserting the key keeps recently touched rows at the end of the map
+        // so the safety cap removes truly older captures first.
+        activeMentionRows.delete(key);
+        activeMentionRows.set(key, { row, mentions });
+      } else {
+        // If a message update removes its mention, stop animating that row.
+        activeMentionRows.delete(key);
+      }
     }
 
-    const looksLikeFreshLoad = packet.rows.length >= 4 && packet.rows.some(row => row?.changeType === 1);
-    if (found.length || looksLikeFreshLoad) {
-      activeChatRef = chatRef;
-      activeMentionRows = found;
-    }
-
+    trimTrackedRows();
     syncAnimationTimer();
   }
 
@@ -200,13 +232,16 @@
     }
   }
 
+  function isAppActive() {
+    return !RN.AppState?.currentState || RN.AppState.currentState === "active";
+  }
+
   function pushAnimatedRows() {
-    if (storage.mode !== "animated" || !activeChatRef || !activeMentionRows.length) return;
-    if (RN.AppState?.currentState && RN.AppState.currentState !== "active") return;
+    if (storage.mode !== "animated" || !activeChatRef || !activeMentionRows.size || !isAppActive()) return;
 
     const now = Date.now();
     const updates = [];
-    for (const record of activeMentionRows) {
+    for (const record of activeMentionRows.values()) {
       try {
         for (const node of record.mentions) applyAnimatedMentionStyle(node, now);
         updates.push({ ...record.row, changeType: 2 });
@@ -238,12 +273,28 @@
   }
 
   function syncAnimationTimer() {
-    const shouldRun = storage.mode === "animated" && activeChatRef && activeMentionRows.length > 0;
+    const shouldRun = storage.mode === "animated" && activeChatRef && activeMentionRows.size > 0 && isAppActive();
     if (!shouldRun) {
       stopAnimationTimer();
       return;
     }
     if (!animationTimer) animationTimer = setInterval(pushAnimatedRows, FRAME_MS);
+  }
+
+  function installAppStateListener() {
+    try {
+      appStateSubscription = RN.AppState?.addEventListener?.("change", state => {
+        if (state === "active") syncAnimationTimer();
+        else stopAnimationTimer();
+      }) ?? null;
+    } catch { appStateSubscription = null; }
+  }
+
+  function removeAppStateListener() {
+    try {
+      appStateSubscription?.remove?.();
+    } catch {}
+    appStateSubscription = null;
   }
 
   function Settings() {
@@ -293,8 +344,8 @@
 
     return React.createElement(RN.ScrollView, { contentContainerStyle: page },
       React.createElement(RN.View, { style: card },
-        React.createElement(RN.Text, { style: title }, "Mention Tag Probe v8"),
-        React.createElement(RN.Text, { style: text }, "Animated Spectrum now refreshes mention rows at about 30 FPS to test whether Discord's native row rebuild can look genuinely smooth."),
+        React.createElement(RN.Text, { style: title }, "Mention Tag Probe v9"),
+        React.createElement(RN.Text, { style: text }, "Animation is back to the lighter ~16 FPS rate. Mention rows are now tracked by message instead of replacing the previous capture, so multiple tagged messages can animate together. The timer fully pauses while Discord is backgrounded."),
       ),
       React.createElement(RN.View, { style: card },
         React.createElement(RN.Text, { style: label }, "Text mode"),
@@ -335,23 +386,25 @@
 
   return {
     onLoad() {
+      installAppStateListener();
       unpatchAst = patchNativeMentionAst();
       unpatchNativeRows = patchNativeRowDispatch();
       syncAnimationTimer();
       try {
         const ok = !!unpatchAst && !!unpatchNativeRows;
-        showToast?.(ok ? "Mention probe v8 loaded" : "Mention probe v8: native hook unavailable");
+        showToast?.(ok ? "Mention probe v9 loaded" : "Mention probe v9: native hook unavailable");
       } catch {}
     },
 
     onUnload() {
       stopAnimationTimer();
+      removeAppStateListener();
       try { unpatchAst?.(); } catch {}
       try { unpatchNativeRows?.(); } catch {}
       unpatchAst = null;
       unpatchNativeRows = null;
       activeChatRef = null;
-      activeMentionRows = [];
+      activeMentionRows.clear();
     },
 
     settings: Settings,
