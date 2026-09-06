@@ -12,18 +12,33 @@
   })();
 
   let unpatchText = null;
+  let hitShown = false;
 
   function flatten(style) {
     try { return RN.StyleSheet?.flatten?.(style) ?? {}; }
     catch { return {}; }
   }
 
-  function looksLikeInlineMention(style) {
-    const flat = flatten(style);
-    return flat
-      && flat.backgroundColor != null
-      && Number(flat.borderRadius) === 3
-      && Number(flat.paddingHorizontal) === 2;
+  function collectText(value, depth = 0) {
+    if (depth > 5 || value == null || value === false) return "";
+    if (typeof value === "string" || typeof value === "number") return String(value);
+    if (Array.isArray(value)) return value.map(v => collectText(v, depth + 1)).join("");
+    if (typeof value === "object") {
+      try { return collectText(value.props?.children, depth + 1); }
+      catch { return ""; }
+    }
+    return "";
+  }
+
+  function looksLikeMentionProps(props) {
+    const text = collectText(props?.children).trim();
+    if (!text.startsWith("@") || text.length < 2) return false;
+
+    const flat = flatten(props?.style);
+    return props?.accessibilityRole === "button"
+      || flat?.backgroundColor != null
+      || flat?.borderRadius != null
+      || flat?.paddingHorizontal != null;
   }
 
   function patchTextRenderer() {
@@ -34,7 +49,10 @@
       return before("render", target, args => {
         try {
           const props = args?.[0];
-          if (!props || !looksLikeInlineMention(props.style)) return;
+          if (!props || !looksLikeMentionProps(props)) return;
+
+          const text = collectText(props.children).trim();
+          props.color = undefined;
           props.style = [
             props.style,
             {
@@ -44,6 +62,11 @@
               paddingHorizontal: 2,
             },
           ];
+
+          if (!hitShown) {
+            hitShown = true;
+            try { showToast?.(`Mention probe v3 HIT ${text}`); } catch {}
+          }
         } catch {}
       });
     } catch {
@@ -53,13 +76,15 @@
 
   return {
     onLoad() {
+      hitShown = false;
       unpatchText = patchTextRenderer();
-      try { showToast?.(unpatchText ? "Mention probe v2 loaded" : "Mention probe v2: Text hook unavailable"); } catch {}
+      try { showToast?.(unpatchText ? "Mention probe v3 loaded" : "Mention probe v3: Text hook unavailable"); } catch {}
     },
 
     onUnload() {
       try { unpatchText?.(); } catch {}
       unpatchText = null;
+      hitShown = false;
     },
   };
 })();
