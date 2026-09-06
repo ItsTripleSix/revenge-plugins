@@ -1,73 +1,65 @@
 (() => {
   "use strict";
 
-  const { before } = vendetta.patcher;
+  const { after } = vendetta.patcher;
   const { findByProps } = vendetta.metro;
-  const { ReactNative: RN } = vendetta.metro.common;
   const showToast = vendetta.ui?.toasts?.showToast;
 
-  const TextModule = (() => {
-    try { return findByProps("Text", "Heading", "TextStyleSheet"); }
+  const MarkupParsers = (() => {
+    try { return findByProps("parseMessageMarkup", "parseEmbedTitleMarkup"); }
     catch { return null; }
   })();
 
-  let unpatchText = null;
-  let hitShown = false;
+  let unpatch = null;
+  let lastHitToast = 0;
 
-  function flatten(style) {
-    try { return RN.StyleSheet?.flatten?.(style) ?? {}; }
-    catch { return {}; }
-  }
+  function tintMentions(value, seen = new Set()) {
+    if (value == null || typeof value !== "object") return 0;
+    if (seen.has(value)) return 0;
+    seen.add(value);
 
-  function collectText(value, depth = 0) {
-    if (depth > 5 || value == null || value === false) return "";
-    if (typeof value === "string" || typeof value === "number") return String(value);
-    if (Array.isArray(value)) return value.map(v => collectText(v, depth + 1)).join("");
-    if (typeof value === "object") {
-      try { return collectText(value.props?.children, depth + 1); }
-      catch { return ""; }
+    let hits = 0;
+    if (Array.isArray(value)) {
+      for (const child of value) hits += tintMentions(child, seen);
+      return hits;
     }
-    return "";
+
+    if (value.type === "mention") {
+      hits++;
+
+      // Discord's native DCDChat consumes hydrated mention AST nodes rather
+      // than the React MarkupMention component. Feed it every color field the
+      // role-mention AST already supports so we can learn which ones it honors.
+      value.color = 0x00FFFF;
+      value.colorString = "#00FFFF";
+      value.roleColor = 0x00FFFF;
+      value.roleColors = {
+        primaryColor: 0x00FFFF,
+        secondaryColor: 0xFF00FF,
+        tertiaryColor: 0x00FFFF,
+      };
+    }
+
+    for (const key of Object.keys(value)) {
+      if (key === "parent" || key === "_parent") continue;
+      hits += tintMentions(value[key], seen);
+    }
+    return hits;
   }
 
-  function looksLikeMentionProps(props) {
-    const text = collectText(props?.children).trim();
-    if (!text.startsWith("@") || text.length < 2) return false;
-
-    const flat = flatten(props?.style);
-    return props?.accessibilityRole === "button"
-      || flat?.backgroundColor != null
-      || flat?.borderRadius != null
-      || flat?.paddingHorizontal != null;
-  }
-
-  function patchTextRenderer() {
-    const target = TextModule?.Text;
-    if (!target || typeof target.render !== "function") return null;
+  function patchNativeMentionAst() {
+    if (!MarkupParsers || typeof MarkupParsers.parseMessageMarkup !== "function") return null;
 
     try {
-      return before("render", target, args => {
+      return after("parseMessageMarkup", MarkupParsers, (_args, result) => {
         try {
-          const props = args?.[0];
-          if (!props || !looksLikeMentionProps(props)) return;
-
-          const text = collectText(props.children).trim();
-          props.color = undefined;
-          props.style = [
-            props.style,
-            {
-              color: "#00FFFF",
-              backgroundColor: "#FF00FF",
-              borderRadius: 3,
-              paddingHorizontal: 2,
-            },
-          ];
-
-          if (!hitShown) {
-            hitShown = true;
-            try { showToast?.(`Mention probe v3 HIT ${text}`); } catch {}
+          const hits = tintMentions(result?.content);
+          if (hits && Date.now() - lastHitToast > 1800) {
+            lastHitToast = Date.now();
+            showToast?.(`Mention probe v4 AST HIT x${hits}`);
           }
         } catch {}
+        return result;
       });
     } catch {
       return null;
@@ -76,15 +68,13 @@
 
   return {
     onLoad() {
-      hitShown = false;
-      unpatchText = patchTextRenderer();
-      try { showToast?.(unpatchText ? "Mention probe v3 loaded" : "Mention probe v3: Text hook unavailable"); } catch {}
+      unpatch = patchNativeMentionAst();
+      try { showToast?.(unpatch ? "Mention probe v4 loaded" : "Mention probe v4: AST hook unavailable"); } catch {}
     },
 
     onUnload() {
-      try { unpatchText?.(); } catch {}
-      unpatchText = null;
-      hitShown = false;
+      try { unpatch?.(); } catch {}
+      unpatch = null;
     },
   };
 })();
