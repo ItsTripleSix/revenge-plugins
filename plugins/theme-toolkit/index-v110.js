@@ -305,9 +305,16 @@
   function refreshMentionUI() {
     try { MessageStore?.emitChange?.(); } catch {}
   }
+  function refreshContextUI() {
+    const stores = new Set([SelectedGuildStore, SelectedChannelStore, ChannelStore, GuildStore].filter(Boolean));
+    for (const store of stores) {
+      try { store.emitChange?.(); } catch {}
+    }
+  }
   function refreshToolkitUI() {
     refreshFolderUI();
     refreshMentionUI();
+    refreshContextUI();
   }
   function colorTimerNeeded() {
     return colorSubscribers.size > 0;
@@ -3228,7 +3235,7 @@
       : "No custom theme active • Discord defaults available";
     return React.createElement(RN.ScrollView, { contentContainerStyle: page },
       React.createElement(RN.View, { style: card },
-        React.createElement(RN.Text, { style: title }, "Theme Toolkit v1.1.1 TEST"),
+        React.createElement(RN.Text, { style: title }, "Theme Toolkit v1.1.2 TEST"),
         React.createElement(RN.Text, { style: text }, activeThemeText),
         React.createElement(RN.Text, { style: text }, "Generate a coordinated palette manually or match each server and DM from its image. Themes with Toolkit metadata, ordinary themes, and Discord without a custom theme are all supported."),
       ),
