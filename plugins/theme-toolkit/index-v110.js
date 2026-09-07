@@ -156,11 +156,10 @@
     openOutlineBrightness: "bright",
     openOutlineTrail: "medium",
 
-    mentionColorSource: "theme",
+    mentionBackgroundSource: "theme",
     mentionBackground: "",
+    mentionLineSource: "theme",
     mentionLine: "",
-    mentionBackgroundEnabled: true,
-    mentionLineEnabled: true,
     mentionTextMode: "auto",
     mentionTextColor: "",
 
@@ -240,6 +239,26 @@
         });
       }
       storage.retiredWhiteMentionTestV080 = true;
+    }
+  } catch {}
+
+  // Split the old shared mention source and On/Off rows into independent
+  // background and side-line sources. Discord is the native/no-override choice.
+  try {
+    if (storage.splitMentionEffectSourcesV1110 !== true) {
+      const migrated = migrateMentionEffectSources(storage);
+      storage.mentionBackgroundSource = migrated.mentionBackgroundSource;
+      storage.mentionLineSource = migrated.mentionLineSource;
+      if (Array.isArray(storage.toolkitProfiles)) {
+        storage.toolkitProfiles = storage.toolkitProfiles.map(profile => {
+          if (!profile?.values || typeof profile.values !== "object") return profile;
+          return { ...profile, values: migrateMentionEffectSources(profile.values) };
+        });
+      }
+      delete storage.mentionColorSource;
+      delete storage.mentionBackgroundEnabled;
+      delete storage.mentionLineEnabled;
+      storage.splitMentionEffectSourcesV1110 = true;
     }
   } catch {}
 
@@ -475,9 +494,10 @@
     if (!profile || typeof profile !== "object" || typeof profile.name !== "string" || !profile.values || typeof profile.values !== "object") return null;
     const name = profile.name.trim().replace(/\s+/g, " ").slice(0, 32);
     if (!name) return null;
+    const migratedValues = migrateMentionEffectSources(profile.values);
     const values = {};
     for (const key of PROFILE_SETTING_KEYS) {
-      const value = profile.values[key];
+      const value = migratedValues[key];
       if (isAppearanceValue(value)) values[key] = value;
     }
     return {
@@ -497,8 +517,9 @@
     return Object.prototype.hasOwnProperty.call(values ?? {}, key) ? values[key] : APPEARANCE_DEFAULTS[key];
   }
   function materializeAppearanceValues(values) {
+    const migratedValues = migrateMentionEffectSources(values);
     const complete = {};
-    for (const key of PROFILE_SETTING_KEYS) complete[key] = appearanceValue(values, key);
+    for (const key of PROFILE_SETTING_KEYS) complete[key] = appearanceValue(migratedValues, key);
     return complete;
   }
   function appearanceValuesMatch(left, right) {
@@ -508,12 +529,16 @@
     const values = profile?.values ?? {};
     const sourceLabel = value => value === "toolkit" ? "Toolkit" : value === "discord" ? "Discord" : "Theme / Auto";
     const uiSource = appearanceValue(values, "uiAccentSource");
-    const mentionSource = appearanceValue(values, "mentionColorSource");
-    if (uiSource !== "toolkit") return `UI ${sourceLabel(uiSource)} • Mentions ${sourceLabel(mentionSource)}`;
+    const backgroundSource = appearanceValue(values, "mentionBackgroundSource");
+    const lineSource = appearanceValue(values, "mentionLineSource");
+    const mentionSummary = backgroundSource === lineSource
+      ? sourceLabel(backgroundSource)
+      : `Background ${sourceLabel(backgroundSource)} / Line ${sourceLabel(lineSource)}`;
+    if (uiSource !== "toolkit") return `UI ${sourceLabel(uiSource)} • Mentions ${mentionSummary}`;
     const search = colorValue(appearanceValue(values, "searchIconAccent")) ?? "fallback";
     const notification = colorValue(appearanceValue(values, "notificationIconAccent")) ?? "fallback";
     const reaction = colorValue(appearanceValue(values, "reactionAccent")) ?? "fallback";
-    return `UI Toolkit • Search ${search} • Bell ${notification} • Reaction ${reaction} • Mentions ${sourceLabel(mentionSource)}`;
+    return `UI Toolkit • Search ${search} • Bell ${notification} • Reaction ${reaction} • Mentions ${mentionSummary}`;
   }
   function createProfileBackup(profiles) {
     return JSON.stringify({
@@ -649,6 +674,25 @@
   function normalizeMentionTagMode(value, fallback = "solid") {
     return ["solid", "gradient"].includes(value) ? value : fallback;
   }
+  function normalizeMentionSource(value, fallback = "theme") {
+    return ["theme", "toolkit", "discord"].includes(value) ? value : fallback;
+  }
+  function migrateMentionEffectSources(values) {
+    const next = { ...(values ?? {}) };
+    const legacySource = normalizeMentionSource(next.mentionColorSource, "theme");
+    next.mentionBackgroundSource = normalizeMentionSource(
+      next.mentionBackgroundSource,
+      next.mentionBackgroundEnabled === false ? "discord" : legacySource,
+    );
+    next.mentionLineSource = normalizeMentionSource(
+      next.mentionLineSource,
+      next.mentionLineEnabled === false ? "discord" : legacySource,
+    );
+    delete next.mentionColorSource;
+    delete next.mentionBackgroundEnabled;
+    delete next.mentionLineEnabled;
+    return next;
+  }
 
   function currentTheme() {
     try {
@@ -765,32 +809,21 @@
 
   function effectiveMentionConfig() {
     const theme = themeMentionConfig();
-    const requested = storage.mentionColorSource;
-    const common = {
-      backgroundEnabled: storage.mentionBackgroundEnabled !== false,
-      lineEnabled: storage.mentionLineEnabled !== false,
+    const resolveEffect = (requested, toolkitColor, themeColor) => {
+      const source = normalizeMentionSource(requested, "theme");
+      if (source === "toolkit") return { source, color: colorValue(toolkitColor) };
+      if (source === "theme" && theme.hasTheme) return { source, color: themeColor };
+      return { source: "discord", color: null };
     };
-    if (requested === "toolkit") {
-      return {
-        ...common,
-        source: "toolkit",
-        background: colorValue(storage.mentionBackground),
-        line: colorValue(storage.mentionLine),
-      };
-    }
-    if (requested === "theme" && theme.hasTheme) {
-      return {
-        ...common,
-        source: "theme",
-        background: theme.background,
-        line: theme.line,
-      };
-    }
+    const background = resolveEffect(storage.mentionBackgroundSource, storage.mentionBackground, theme.background);
+    const line = resolveEffect(storage.mentionLineSource, storage.mentionLine, theme.line);
     return {
-      ...common,
-      source: "discord",
-      background: null,
-      line: null,
+      backgroundSource: background.source,
+      backgroundEnabled: background.source !== "discord",
+      background: background.color,
+      lineSource: line.source,
+      lineEnabled: line.source !== "discord",
+      line: line.color,
     };
   }
 
@@ -2449,18 +2482,20 @@
           const message = args?.[0]?.message;
           if (!message?.mentioned) return result;
           const cfg = effectiveMentionConfig();
-          if (cfg.source === "discord") return result;
           const existing = result.backgroundHighlight ?? {};
           const next = { ...existing };
+          let highlightChanged = false;
           const background = cfg.backgroundEnabled ? nativeColor(cfg.background) : null;
           const line = cfg.lineEnabled ? nativeColor(cfg.line) : null;
           if (cfg.backgroundEnabled && background != null) {
             next.backgroundColor = background;
+            highlightChanged = true;
           }
           if (cfg.lineEnabled && line != null) {
             next.gutterColor = line;
+            highlightChanged = true;
           }
-          result.backgroundHighlight = next;
+          if (highlightChanged) result.backgroundHighlight = next;
           const textColor = effectiveMentionTextColor(cfg);
           if (textColor && result.message && typeof result.message === "object") {
             const processed = nativeColor(textColor);
@@ -2833,7 +2868,7 @@
       : "No custom theme active • Discord defaults available";
     return React.createElement(RN.ScrollView, { contentContainerStyle: page },
       React.createElement(RN.View, { style: card },
-        React.createElement(RN.Text, { style: title }, "Theme Toolkit v1.1.9 TEST"),
+        React.createElement(RN.Text, { style: title }, "Theme Toolkit v1.1.10 TEST"),
         React.createElement(RN.Text, { style: text }, activeThemeText),
         React.createElement(RN.Text, { style: text }, "Customize folders, mentions, outlines, and UI accents individually. Themes with Toolkit metadata, ordinary themes, and Discord without a custom theme are all supported."),
       ),
@@ -2909,23 +2944,17 @@
           React.createElement(RN.Text, { style: text }, "If an individual override is blank, it inherits Smart accent fallback."),
         ) : null,
       ),
-      React.createElement(RN.View, { style: card },
-        React.createElement(RN.Text, { style: title }, "Mentions"),
-        React.createElement(RN.Text, { style: label }, "Mentioned-message highlight"),
-        React.createElement(RN.Text, { style: text }, "Static only. Controls the whole-message background and left side line when a message mentions you."),
-        React.createElement(Choice, {
-          value: storage.mentionColorSource,
-          options: [{ value: "theme", label: "Theme / Auto" }, { value: "toolkit", label: "Toolkit" }, { value: "discord", label: "Discord" }],
-          onChange: value => set("mentionColorSource", value),
-        }),
-        storage.mentionColorSource !== "discord" ? React.createElement(RN.View, { style: { gap: 8 } },
+        React.createElement(RN.View, { style: card },
+          React.createElement(RN.Text, { style: title }, "Mentions"),
+          React.createElement(RN.Text, { style: label }, "Mentioned-message highlight"),
+          React.createElement(RN.Text, { style: text }, "Static only. The background and left side line each choose their own source. Discord leaves only that effect native."),
           React.createElement(RN.Text, { style: label }, "Message background"),
           React.createElement(Choice, {
-            value: storage.mentionBackgroundEnabled !== false,
-            options: [{ value: true, label: "On" }, { value: false, label: "Off" }],
-            onChange: value => set("mentionBackgroundEnabled", value),
+            value: storage.mentionBackgroundSource,
+            options: [{ value: "theme", label: "Theme / Auto" }, { value: "toolkit", label: "Toolkit" }, { value: "discord", label: "Discord" }],
+            onChange: value => set("mentionBackgroundSource", value),
           }),
-          storage.mentionColorSource === "toolkit" && storage.mentionBackgroundEnabled !== false
+          storage.mentionBackgroundSource === "toolkit"
             ? React.createElement(RN.View, { style: { gap: 8 } },
               React.createElement(ColorInput, { labelText: "Background color", storageKey: "mentionBackground" }),
               React.createElement(RN.Text, { style: text }, "8-digit hex is supported for transparency, e.g. #FF00FF20."),
@@ -2933,11 +2962,11 @@
             : null,
           React.createElement(RN.Text, { style: label }, "Side line"),
           React.createElement(Choice, {
-            value: storage.mentionLineEnabled !== false,
-            options: [{ value: true, label: "On" }, { value: false, label: "Off" }],
-            onChange: value => set("mentionLineEnabled", value),
+            value: storage.mentionLineSource,
+            options: [{ value: "theme", label: "Theme / Auto" }, { value: "toolkit", label: "Toolkit" }, { value: "discord", label: "Discord" }],
+            onChange: value => set("mentionLineSource", value),
           }),
-          storage.mentionColorSource === "toolkit" && storage.mentionLineEnabled !== false
+          storage.mentionLineSource === "toolkit"
             ? React.createElement(ColorInput, { labelText: "Line color", storageKey: "mentionLine" })
             : null,
           React.createElement(RN.Text, { style: label }, "Message text"),
@@ -2948,7 +2977,6 @@
           }),
           storage.mentionTextMode === "custom" ? React.createElement(ColorInput, { labelText: "Message text color", storageKey: "mentionTextColor" }) : null,
           React.createElement(RN.Text, { style: text }, "Auto contrast chooses black or white for the message body based on the effective highlight background. The @mention tag keeps its own separate styling."),
-        ) : null,
         React.createElement(RN.View, { style: { paddingTop: 12, borderTopWidth: 1, borderTopColor: "#2B2D31", gap: 10 } },
           React.createElement(RN.Text, { style: label }, "Inline @mention tags"),
           React.createElement(RN.Text, { style: text }, "Controls the actual @Username / @Role tag inside messages. Discord mode leaves native tags untouched."),
