@@ -37,8 +37,6 @@
         ?? findByProps("getChannel");
     } catch { return null; }
   })();
-  const UserStore = (() => { try { return findByProps("getUser", "getCurrentUser") ?? findByProps("getUser"); } catch { return null; } })();
-  const ChannelIconUtils = (() => { try { return findByProps("getChannelIconURL", "getChannelIconSource"); } catch { return null; } })();
   const BaseChannelItemModule = (() => {
     try {
       return findByProps("ChannelModes", "BaseChannelIcon")
@@ -75,10 +73,6 @@
       return found ?? (typeof named?.default === "function" ? named : null);
     } catch { return null; }
   })();
-  const ImageManager = RN.NativeModules?.ImageManager
-    ?? globalThis?.nativeModuleProxy?.ImageManager
-    ?? globalThis?.window?.nativeModuleProxy?.ImageManager
-    ?? null;
   const GuildBarWrapperModule = (() => { try { return findByProps("useGuildsBarAnimatedWrapperStyles", "renderUnreadIndicator"); } catch { return null; } })();
   const HomeIconModule = (() => { try { return findByProps("HomeIcon"); } catch { return null; } })();
   const ChatIconModule = (() => { try { return findByProps("ChatIcon"); } catch { return null; } })();
@@ -192,16 +186,12 @@
     autoPaletteSeed: "#B026FF",
     autoPaletteStyle: "spectrum",
     autoPaletteScope: "all",
-    contextAutoPaletteEnabled: false,
-    contextAutoPaletteCache: {},
-    contextAutoPaletteBase: null,
     toolkitProfiles: [],
   };
   const PROFILE_SETTING_KEYS = Object.freeze(Object.keys(APPEARANCE_DEFAULTS));
   const PROFILE_LIMIT = 20;
   const PROFILE_BACKUP_FORMAT = "theme-toolkit-profile-backup";
   const PROFILE_BACKUP_VERSION = 1;
-  const CONTEXT_PALETTE_LIMIT = 100;
 
   // Retire the exact v0.6 visual-test palette once. Any changed value means the
   // user customized it, so the migration leaves the entire set untouched.
@@ -256,6 +246,21 @@
     }
   } catch {}
 
+  // Remove the retired per-server/DM palette experiment. If it was active,
+  // restore the appearance saved before it was enabled, then discard its cache.
+  try {
+    if (storage.retiredContextAutoPalettesV116 !== true) {
+      const base = storage.contextAutoPaletteBase;
+      if (storage.contextAutoPaletteEnabled === true && base && typeof base === "object" && !Array.isArray(base)) {
+        applyAppearanceValues(materializeAppearanceValues(base));
+      }
+      delete storage.contextAutoPaletteEnabled;
+      delete storage.contextAutoPaletteCache;
+      delete storage.contextAutoPaletteBase;
+      storage.retiredContextAutoPalettesV116 = true;
+    }
+  } catch {}
+
   for (const [key, value] of Object.entries(DEFAULTS)) {
     try { if (storage[key] == null) storage[key] = value; } catch {}
   }
@@ -291,15 +296,8 @@
   let unpatchChannelUnreadDirect = null;
   let unpatchMessageRowManager = null;
   let appStateSubscription = null;
-  let contextStoreSubscriptions = [];
-  let contextAutoPaletteTimer = null;
-  let contextAutoPaletteRequest = 0;
-  let activeContextPaletteSignature = "";
   let messageRowRefreshTimer = null;
   let toolkitAppearanceRevision = 0;
-  let channelUnreadDirectHits = 0;
-  let messageRowManagerHits = 0;
-  let messageRowRefreshHits = 0;
   const visualSubscribers = new Set();
   const colorSubscribers = new Set();
   let colorTimer = null;
@@ -356,7 +354,6 @@
     messageRowAppliedRevisions.set(key, toolkitAppearanceRevision);
     try {
       refresh();
-      messageRowRefreshHits++;
       return true;
     } catch (error) {
       try { console.error("[ThemeToolkit] message row refresh failed", error); } catch {}
@@ -499,19 +496,6 @@
     const weight = clamp(foregroundWeight, 0, 1);
     return `#${byteHex(bg.r * (1 - weight) + fg.r * weight)}${byteHex(bg.g * (1 - weight) + fg.g * weight)}${byteHex(bg.b * (1 - weight) + fg.b * weight)}`;
   }
-  function validRemoteImageURL(value) {
-    return typeof value === "string" && /^https?:\/\//i.test(value.trim()) ? value.trim() : null;
-  }
-  function guildIconURL(guild) {
-    if (!guild) return null;
-    try {
-      const direct = validRemoteImageURL(guild.getIconURL?.(128, false));
-      if (direct) return direct;
-    } catch {}
-    const id = String(guild.id ?? "").trim();
-    const icon = String(guild.icon ?? "").trim();
-    return id && icon ? `https://cdn.discordapp.com/icons/${id}/${icon}.png?size=128` : null;
-  }
   function selectedChannelId(guildId = null) {
     try {
       return SelectedChannelStore?.getCurrentlySelectedChannelId?.(guildId)
@@ -519,289 +503,6 @@
         ?? SelectedChannelStore?.getChannelId?.()
         ?? null;
     } catch { return null; }
-  }
-  function channelGuildId(channel) {
-    try { return channel?.guild_id ?? channel?.guildId ?? channel?.getGuildId?.() ?? null; }
-    catch { return channel?.guild_id ?? channel?.guildId ?? null; }
-  }
-  function channelRecipient(channel) {
-    const recipients = Array.isArray(channel?.recipients) ? channel.recipients : [];
-    const currentId = (() => { try { return UserStore?.getCurrentUser?.()?.id ?? null; } catch { return null; } })();
-    for (const item of recipients) {
-      const id = typeof item === "string" ? item : item?.id;
-      if (!id || id === currentId) continue;
-      try {
-        const user = typeof item === "object" && item?.id ? item : UserStore?.getUser?.(id);
-        if (user) return user;
-      } catch {}
-    }
-    return null;
-  }
-  function channelImageURL(channel, recipient) {
-    try {
-      const direct = validRemoteImageURL(ChannelIconUtils?.getChannelIconURL?.(channel, 128, false));
-      if (direct) return direct;
-    } catch {}
-    try {
-      const avatar = validRemoteImageURL(recipient?.getAvatarURL?.(undefined, 128, false));
-      if (avatar) return avatar;
-    } catch {}
-    const channelId = String(channel?.id ?? "").trim();
-    const icon = String(channel?.icon ?? "").trim();
-    if (channelId && icon) return `https://cdn.discordapp.com/channel-icons/${channelId}/${icon}.png?size=128`;
-    const userId = String(recipient?.id ?? "").trim();
-    const avatar = String(recipient?.avatar ?? "").trim();
-    return userId && avatar ? `https://cdn.discordapp.com/avatars/${userId}/${avatar}.png?size=128` : null;
-  }
-  function currentContextImage() {
-    let guildId = null;
-    try { guildId = SelectedGuildStore?.getGuildId?.() ?? null; } catch {}
-    const channelId = selectedChannelId(guildId);
-    let channel = null;
-    try { if (channelId) channel = ChannelStore?.getChannel?.(channelId) ?? null; } catch {}
-    guildId = guildId ?? channelGuildId(channel);
-    if (guildId) {
-      let guild = null;
-      try { guild = GuildStore?.getGuild?.(guildId) ?? null; } catch {}
-      return {
-        key: `guild:${guildId}`,
-        type: "server",
-        id: String(guildId),
-        label: String(guild?.name ?? "Current server"),
-        sourceLabel: "server icon",
-        url: guildIconURL(guild),
-      };
-    }
-    if (channel) {
-      const recipient = channelRecipient(channel);
-      const group = Array.isArray(channel.recipients) && channel.recipients.length > 1;
-      return {
-        key: `dm:${channel.id}`,
-        type: group ? "group-dm" : "dm",
-        id: String(channel.id),
-        label: String(channel.name ?? recipient?.globalName ?? recipient?.username ?? (group ? "Current group DM" : "Current DM")),
-        sourceLabel: group ? "group icon or member avatar" : "DM avatar",
-        url: channelImageURL(channel, recipient),
-      };
-    }
-    return { key: null, type: "none", id: null, label: "No server or DM selected", sourceLabel: "none", url: null };
-  }
-  function collectRGBColors(value, output = [], depth = 0) {
-    if (value == null || depth > 4 || output.length >= 24) return output;
-    const directHex = stripAlpha(value);
-    if (directHex) {
-      const rgb = rgbParts(directHex);
-      if (rgb) output.push({ ...rgb, hex: directHex });
-      return output;
-    }
-    if (Array.isArray(value)) {
-      if (value.length >= 3 && value.slice(0, 3).every(item => Number.isFinite(Number(item)))) {
-        const [r, g, b] = value.map(Number);
-        const hex = `#${byteHex(r)}${byteHex(g)}${byteHex(b)}`;
-        output.push({ r: clamp(r, 0, 255), g: clamp(g, 0, 255), b: clamp(b, 0, 255), hex });
-      } else {
-        for (const item of value) collectRGBColors(item, output, depth + 1);
-      }
-      return output;
-    }
-    if (typeof value === "object") {
-      const r = Number(value.r ?? value.red);
-      const g = Number(value.g ?? value.green);
-      const b = Number(value.b ?? value.blue);
-      if ([r, g, b].every(Number.isFinite)) {
-        const hex = `#${byteHex(r)}${byteHex(g)}${byteHex(b)}`;
-        output.push({ r: clamp(r, 0, 255), g: clamp(g, 0, 255), b: clamp(b, 0, 255), hex });
-      } else {
-        for (const key of ["primary", "dominant", "vibrant", "average", "muted", "colors", "palette"]) {
-          if (Object.prototype.hasOwnProperty.call(value, key)) collectRGBColors(value[key], output, depth + 1);
-        }
-      }
-    }
-    return output;
-  }
-  function chooseImageSeed(colors) {
-    const candidates = collectRGBColors(colors).filter(item => {
-      const hsl = rgbToHsl(item.hex);
-      return hsl && hsl.l >= 0.08 && hsl.l <= 0.92;
-    });
-    const colorful = candidates.find(item => {
-      const hsl = rgbToHsl(item.hex);
-      return hsl && hsl.s >= 0.2 && hsl.l >= 0.15 && hsl.l <= 0.85;
-    });
-    return colorful?.hex ?? candidates[0]?.hex ?? null;
-  }
-  async function extractImageSeed(url) {
-    const imageURL = validRemoteImageURL(url);
-    if (!imageURL || typeof ImageManager?.getDominantColors !== "function") return null;
-    const source = (() => {
-      const raw = { uri: imageURL };
-      try { return RN.Image?.resolveAssetSource?.(raw) ?? raw; } catch { return raw; }
-    })();
-    const colors = await ImageManager.getDominantColors(source);
-    return chooseImageSeed(colors);
-  }
-  function storedContextPaletteCache() {
-    const raw = storage.contextAutoPaletteCache;
-    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
-    const entries = Object.entries(raw).flatMap(([key, value]) => {
-      const seed = stripAlpha(value?.seed);
-      const url = validRemoteImageURL(value?.url);
-      if (!key || !seed || !url) return [];
-      return [[key, {
-        key,
-        type: String(value?.type ?? "context"),
-        label: String(value?.label ?? "Saved context").slice(0, 100),
-        sourceLabel: String(value?.sourceLabel ?? "image").slice(0, 60),
-        url,
-        seed,
-        updatedAt: Number.isFinite(value?.updatedAt) ? value.updatedAt : 0,
-      }]];
-    });
-    entries.sort((left, right) => right[1].updatedAt - left[1].updatedAt);
-    return Object.fromEntries(entries.slice(0, CONTEXT_PALETTE_LIMIT));
-  }
-  function cachedContextPalette(context) {
-    if (!context?.key) return null;
-    return storedContextPaletteCache()[context.key] ?? null;
-  }
-  function writeContextPalette(context, seedValue) {
-    const seed = stripAlpha(seedValue);
-    const url = validRemoteImageURL(context?.url);
-    if (!context?.key || !seed || !url) return null;
-    const record = {
-      key: context.key,
-      type: context.type,
-      label: context.label,
-      sourceLabel: context.sourceLabel,
-      url,
-      seed,
-      updatedAt: Date.now(),
-    };
-    const cache = storedContextPaletteCache();
-    delete cache[context.key];
-    storage.contextAutoPaletteCache = Object.fromEntries([
-      [context.key, record],
-      ...Object.entries(cache),
-    ].slice(0, CONTEXT_PALETTE_LIMIT));
-    return record;
-  }
-  function contextBaseAppearance() {
-    const raw = storage.contextAutoPaletteBase;
-    return raw && typeof raw === "object" && !Array.isArray(raw)
-      ? materializeAppearanceValues(raw)
-      : null;
-  }
-  function restoreContextBaseAppearance() {
-    const base = contextBaseAppearance();
-    if (!base) return false;
-    if (activeContextPaletteSignature !== "base") {
-      applyAppearanceValues(base);
-      activeContextPaletteSignature = "base";
-      refreshToolkitUI();
-    }
-    return true;
-  }
-  async function syncContextAutoPalette(options = {}) {
-    if (storage.contextAutoPaletteEnabled !== true) return { status: "disabled" };
-    const request = ++contextAutoPaletteRequest;
-    const context = currentContextImage();
-    if (!context.key || !context.url) {
-      restoreContextBaseAppearance();
-      return { status: "fallback", context };
-    }
-    const style = storage.autoPaletteStyle;
-    const scope = storage.autoPaletteScope;
-    const cached = cachedContextPalette(context);
-    let seed = !options.forceExtract && cached?.url === context.url ? cached.seed : null;
-    let extracted = false;
-    if (!seed) {
-      try { seed = await extractImageSeed(context.url); }
-      catch (error) {
-        try { console.error("[ThemeToolkit] automatic context color extraction failed", error); } catch {}
-      }
-      if (request !== contextAutoPaletteRequest || storage.contextAutoPaletteEnabled !== true) return { status: "stale", context };
-      const latest = currentContextImage();
-      if (latest.key !== context.key || latest.url !== context.url) return { status: "stale", context };
-      if (seed) {
-        extracted = true;
-        writeContextPalette(context, seed);
-      }
-    }
-    const palette = generateAutoPalette(seed, style);
-    const values = autoPaletteAppearanceValues(palette, scope);
-    if (!seed || !values) {
-      restoreContextBaseAppearance();
-      return { status: "fallback", context };
-    }
-    const signature = `${context.key}|${context.url}|${seed}|${style}|${scope}`;
-    if (signature !== activeContextPaletteSignature || options.forceApply) {
-      storage.autoPaletteSeed = seed;
-      const base = contextBaseAppearance();
-      if (base) applyAppearanceValues(base);
-      applyAppearanceValues(values);
-      activeContextPaletteSignature = signature;
-      refreshToolkitUI();
-    }
-    if (options.notify) toast(`Matched ${context.label} • ${seed}`);
-    return { status: "applied", context, seed, extracted };
-  }
-  function cancelContextAutoPaletteWork() {
-    contextAutoPaletteRequest++;
-    if (contextAutoPaletteTimer != null) clearTimeout(contextAutoPaletteTimer);
-    contextAutoPaletteTimer = null;
-  }
-  function scheduleContextAutoPaletteSync(delay = 100) {
-    if (storage.contextAutoPaletteEnabled !== true) return;
-    if (contextAutoPaletteTimer != null) clearTimeout(contextAutoPaletteTimer);
-    contextAutoPaletteTimer = setTimeout(() => {
-      contextAutoPaletteTimer = null;
-      void syncContextAutoPalette().catch(error => {
-        try { console.error("[ThemeToolkit] automatic context palette failed", error); } catch {}
-      });
-    }, Math.max(0, delay));
-  }
-  function subscribeContextStore(store, listener) {
-    if (typeof store?.addChangeListener !== "function") return null;
-    try {
-      const subscription = store.addChangeListener(listener);
-      if (typeof subscription === "function") return subscription;
-      if (typeof subscription?.remove === "function") return () => subscription.remove();
-      if (typeof store.removeChangeListener === "function") return () => store.removeChangeListener(listener);
-    } catch {}
-    return null;
-  }
-  function removeContextStoreListeners() {
-    cancelContextAutoPaletteWork();
-    for (const unsubscribe of contextStoreSubscriptions) {
-      try { unsubscribe?.(); } catch {}
-    }
-    contextStoreSubscriptions = [];
-  }
-  function installContextStoreListeners() {
-    removeContextStoreListeners();
-    const listener = () => scheduleContextAutoPaletteSync(100);
-    contextStoreSubscriptions = [SelectedGuildStore, SelectedChannelStore]
-      .map(store => subscribeContextStore(store, listener))
-      .filter(Boolean);
-    if (storage.contextAutoPaletteEnabled === true) scheduleContextAutoPaletteSync(0);
-  }
-  async function enableContextAutoPalette(options = {}) {
-    if (storage.contextAutoPaletteEnabled !== true) {
-      storage.contextAutoPaletteBase = materializeAppearanceValues(appearanceSnapshot());
-      storage.contextAutoPaletteEnabled = true;
-    } else if (!contextBaseAppearance()) {
-      storage.contextAutoPaletteBase = materializeAppearanceValues(appearanceSnapshot());
-    }
-    activeContextPaletteSignature = "";
-    return syncContextAutoPalette({ notify: options.notify === true, forceApply: true });
-  }
-  function disableContextAutoPalette(restore = true) {
-    storage.contextAutoPaletteEnabled = false;
-    cancelContextAutoPaletteWork();
-    if (restore) restoreContextBaseAppearance();
-    storage.contextAutoPaletteBase = null;
-    activeContextPaletteSignature = "";
-    refreshToolkitUI();
   }
   function generateAutoPalette(seedValue, styleValue = "spectrum") {
     const seed = stripAlpha(seedValue);
@@ -2183,7 +1884,6 @@
     for (const fn of [...colorSubscribers]) { try { fn(now); } catch {} }
     ensureColorTimer();
     resumeSharedMotionClocks();
-    scheduleContextAutoPaletteSync(0);
   }
   function installAppStateListener() {
     try {
@@ -2801,7 +2501,6 @@
           const cfg = effectiveUIAccentConfig();
           const color = cfg.source === "discord" ? null : stripAlpha(cfg.selectedGuild);
           if (!color) return;
-          channelUnreadDirectHits++;
           args[0] = { ...props, style: [props.style, { backgroundColor: color }] };
         } catch (error) {
           try { console.error("[ThemeToolkit] direct channel unread recolor failed", error); } catch {}
@@ -2823,7 +2522,6 @@
           if (!channelId) return result;
           const key = String(channelId);
           const refresh = () => result.updateRows({ forceRender: true, forceReload: true });
-          messageRowManagerHits++;
           messageRowRefreshers.set(key, refresh);
           while (messageRowRefreshers.size > 24) messageRowRefreshers.delete(messageRowRefreshers.keys().next().value);
           if (messageRowAppliedRevisions.get(key) !== toolkitAppearanceRevision) {
@@ -2943,15 +2641,10 @@
     const [, forceUpdate] = React.useReducer(v => v + 1, 0);
     const [profileName, setProfileName] = React.useState("");
     const [profileTransferText, setProfileTransferText] = React.useState("");
-    const [contextProbeStatus, setContextProbeStatus] = React.useState("");
-    const [contextProbeBusy, setContextProbeBusy] = React.useState(false);
     const theme = currentTheme();
     const themeCfg = themeFolderConfig();
     const profiles = storedProfiles();
     const currentAppearance = appearanceSnapshot();
-    const contextImage = currentContextImage();
-    const contextPaletteCache = storedContextPaletteCache();
-    const currentContextPalette = contextImage.key ? contextPaletteCache[contextImage.key] ?? null : null;
     const autoPalette = generateAutoPalette(storage.autoPaletteSeed, storage.autoPaletteStyle);
     const page = { padding: 16, gap: 14 };
     const card = { backgroundColor: "#111214", borderRadius: 12, padding: 14, gap: 10 };
@@ -3066,7 +2759,6 @@
         {
           text: "Load & reload",
           onPress() {
-            if (storage.contextAutoPaletteEnabled === true) disableContextAutoPalette(false);
             applyValues(profile.values);
             if (scheduleDiscordReload()) toast(`Loading ${profile.name}…`);
             else toast(`Loaded ${profile.name}. Restart Discord to finish applying it.`);
@@ -3078,94 +2770,16 @@
       const palette = generateAutoPalette(storage.autoPaletteSeed, storage.autoPaletteStyle);
       if (!palette) { toast("Choose a valid palette seed color"); return; }
       const values = autoPaletteAppearanceValues(palette, storage.autoPaletteScope);
-      if (storage.contextAutoPaletteEnabled === true) disableContextAutoPalette(false);
       applyValues(values);
       if (scheduleDiscordReload()) toast(storage.autoPaletteScope === "all"
         ? "Applying palette to the whole Toolkit…"
         : "Applying palette to UI accents…");
       else toast("Palette saved. Restart Discord to finish applying it.");
     }
-    async function toggleAutomaticContextPalettes(enabled) {
-      if (enabled && typeof ImageManager?.getDominantColors !== "function") {
-        toast("Discord's native image color extractor is unavailable on this build");
-        return;
-      }
-      setContextProbeBusy(true);
-      try {
-        if (!enabled) {
-          disableContextAutoPalette(true);
-          setContextProbeStatus("Automatic switching is off. Your previous appearance was restored.");
-          toast("Automatic server / DM palettes off");
-          return;
-        }
-        setContextProbeStatus("Matching the current server or DM…");
-        const result = await enableContextAutoPalette({ notify: true });
-        if (result.status === "applied") setContextProbeStatus(`${result.context.label} • automatic • ${result.seed}`);
-        else if (result.status === "fallback") setContextProbeStatus("No usable image here. Your base appearance is active.");
-        else if (result.status === "stale") {
-          setContextProbeStatus("The selected context changed. Matching the new one…");
-          scheduleContextAutoPaletteSync(0);
-        }
-      } finally {
-        setContextProbeBusy(false);
-        forceUpdate();
-      }
-    }
-    async function refreshAutomaticContextPalette() {
-      if (storage.contextAutoPaletteEnabled !== true) return;
-      setContextProbeBusy(true);
-      setContextProbeStatus("Refreshing this context's image colors…");
-      try {
-        const result = await syncContextAutoPalette({ forceExtract: true, forceApply: true, notify: true });
-        if (result.status === "applied") setContextProbeStatus(`${result.context.label} • automatic • ${result.seed}`);
-        else setContextProbeStatus("No usable image here. Your base appearance is active.");
-      } finally {
-        setContextProbeBusy(false);
-        forceUpdate();
-      }
-    }
     function setAutoPaletteOption(key, value) {
       storage[key] = value;
       forceUpdate();
       refreshToolkitUI();
-      if (storage.contextAutoPaletteEnabled === true) {
-        activeContextPaletteSignature = "";
-        void syncContextAutoPalette({ forceApply: true }).then(() => forceUpdate()).catch(error => {
-          try { console.error("[ThemeToolkit] automatic palette option update failed", error); } catch {}
-        });
-      }
-    }
-    async function useCurrentContextImage() {
-      if (!contextImage.url) { toast(`No ${contextImage.sourceLabel} is available here`); return; }
-      if (typeof ImageManager?.getDominantColors !== "function") {
-        toast("Discord's native image color extractor is unavailable on this build");
-        return;
-      }
-      setContextProbeBusy(true);
-      setContextProbeStatus("Analyzing image…");
-      try {
-        const seed = await extractImageSeed(contextImage.url);
-        if (!seed) {
-          setContextProbeStatus("The image was read, but no usable color was returned.");
-          toast("Could not find a usable color in that image");
-          return;
-        }
-        set("autoPaletteSeed", seed);
-        if (storage.contextAutoPaletteEnabled === true) {
-          writeContextPalette(contextImage, seed);
-          await syncContextAutoPalette({ forceApply: true });
-          setContextProbeStatus(`${contextImage.label} • automatic • ${seed}`);
-        } else {
-          setContextProbeStatus(`${contextImage.label} • ${seed}`);
-        }
-        toast(`Auto Palette seed: ${seed}`);
-      } catch (error) {
-        try { console.error("[ThemeToolkit] context image color extraction failed", error); } catch {}
-        setContextProbeStatus("Image color extraction failed on this Discord build.");
-        toast("Could not analyze that server or DM image");
-      } finally {
-        setContextProbeBusy(false);
-      }
     }
     function Choice({ value, options, onChange }) {
       return React.createElement(RN.View, { style: { flexDirection: "row", gap: 6, flexWrap: "wrap" } }, options.map(option => {
@@ -3388,43 +3002,13 @@
       : "No custom theme active • Discord defaults available";
     return React.createElement(RN.ScrollView, { contentContainerStyle: page },
       React.createElement(RN.View, { style: card },
-        React.createElement(RN.Text, { style: title }, "Theme Toolkit v1.1.5 TEST"),
+        React.createElement(RN.Text, { style: title }, "Theme Toolkit v1.1.6 TEST"),
         React.createElement(RN.Text, { style: text }, activeThemeText),
-        React.createElement(RN.Text, { style: text }, "Generate a coordinated palette manually or match each server and DM from its image. Themes with Toolkit metadata, ordinary themes, and Discord without a custom theme are all supported."),
+        React.createElement(RN.Text, { style: text }, "Generate coordinated palettes manually. Themes with Toolkit metadata, ordinary themes, and Discord without a custom theme are all supported."),
       ),
       React.createElement(RN.View, { style: card },
         React.createElement(RN.Text, { style: title }, "Auto Palette"),
         React.createElement(RN.Text, { style: text }, "Builds coordinated Toolkit colors from one seed. It does not edit your theme file or Discord's saved folder colors."),
-        React.createElement(RN.View, { style: { padding: 10, borderRadius: 10, borderWidth: 1, borderColor: "#2B2D31", gap: 8 } },
-          React.createElement(RN.Text, { style: label }, "Current server / DM image"),
-          React.createElement(RN.Text, { style: text }, `${contextImage.label} • ${contextImage.sourceLabel}`),
-          contextImage.url ? React.createElement(RN.Image, {
-            source: { uri: contextImage.url },
-            style: { width: 72, height: 72, borderRadius: 16, backgroundColor: "#000000" },
-          }) : React.createElement(RN.Text, { style: text }, "No usable image is available in the currently selected context."),
-          React.createElement(RN.Text, { style: text }, `Native color extractor: ${typeof ImageManager?.getDominantColors === "function" ? "FOUND" : "MISSING"}`),
-          React.createElement(RN.Text, { style: text }, `Live refresh hooks: Unread ${typeof ChannelUnreadIndicatorModule?.default === "function" ? `DIRECT • hits ${channelUnreadDirectHits}` : typeof BaseChannelItemModule?.default === "function" ? "FALLBACK" : "MISSING"} • Messages ${typeof UseRowManagerModule?.default === "function" ? `FOUND • manager ${messageRowManagerHits} • refresh ${messageRowRefreshHits}` : "MISSING"}`),
-          React.createElement(ToggleRow, {
-            labelText: "Automatic server / DM palettes",
-            value: storage.contextAutoPaletteEnabled === true,
-            onChange: value => void toggleAutomaticContextPalettes(value),
-          }),
-          React.createElement(RN.Text, { style: text }, storage.contextAutoPaletteEnabled === true
-            ? `${Object.keys(contextPaletteCache).length} context${Object.keys(contextPaletteCache).length === 1 ? "" : "s"} cached. Moving between servers and DMs switches palettes automatically. Loading a saved profile or applying a manual palette turns this off.`
-            : "When enabled, each server icon or DM avatar gets its own cached palette. A missing image restores the appearance you had before enabling it."),
-          currentContextPalette ? React.createElement(RN.Text, { style: text }, `Current cache: ${currentContextPalette.seed}`) : null,
-          React.createElement(ActionButton, {
-            labelText: contextProbeBusy ? "Analyzing…" : "Use current image as seed",
-            onPress: () => void useCurrentContextImage(),
-            disabled: contextProbeBusy || !contextImage.url || typeof ImageManager?.getDominantColors !== "function",
-          }),
-          storage.contextAutoPaletteEnabled === true ? React.createElement(ActionButton, {
-            labelText: contextProbeBusy ? "Refreshing…" : "Refresh this context's colors",
-            onPress: () => void refreshAutomaticContextPalette(),
-            disabled: contextProbeBusy || !contextImage.url || typeof ImageManager?.getDominantColors !== "function",
-          }) : null,
-          contextProbeStatus ? React.createElement(RN.Text, { style: text }, contextProbeStatus) : null,
-        ),
         React.createElement(ColorInput, { labelText: "Seed color", storageKey: "autoPaletteSeed" }),
         React.createElement(RN.Text, { style: label }, "Palette style"),
         React.createElement(Choice, {
@@ -3618,7 +3202,6 @@
   return {
     onLoad() {
       installAppStateListener();
-      installContextStoreListeners();
       unpatchFolder = patchFolderRenderer();
       unpatchFolderBG = patchExpandedFolderBackground();
       unpatchChannelUnread = patchChannelUnreadIndicators();
@@ -3711,7 +3294,6 @@
       unpatchLegacyHeaderIcon = null;
       unpatchHeaderIconButton = null;
       unpatchGuildWrapperOverlay = null;
-      removeContextStoreListeners();
       removeAppStateListener();
       visualSubscribers.clear();
       colorSubscribers.clear();
