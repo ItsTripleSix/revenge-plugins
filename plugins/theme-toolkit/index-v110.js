@@ -2833,7 +2833,7 @@
       : "No custom theme active • Discord defaults available";
     return React.createElement(RN.ScrollView, { contentContainerStyle: page },
       React.createElement(RN.View, { style: card },
-        React.createElement(RN.Text, { style: title }, "Theme Toolkit v1.1.8 TEST"),
+        React.createElement(RN.Text, { style: title }, "Theme Toolkit v1.1.9 TEST"),
         React.createElement(RN.Text, { style: text }, activeThemeText),
         React.createElement(RN.Text, { style: text }, "Customize folders, mentions, outlines, and UI accents individually. Themes with Toolkit metadata, ordinary themes, and Discord without a custom theme are all supported."),
       ),
@@ -2918,11 +2918,6 @@
           options: [{ value: "theme", label: "Theme / Auto" }, { value: "toolkit", label: "Toolkit" }, { value: "discord", label: "Discord" }],
           onChange: value => set("mentionColorSource", value),
         }),
-        storage.mentionColorSource === "toolkit" ? React.createElement(RN.View, { style: { gap: 8 } },
-          React.createElement(ColorInput, { labelText: "Mentioned-message background", storageKey: "mentionBackground" }),
-          React.createElement(RN.Text, { style: text }, "8-digit hex is supported for transparency, e.g. #FF00FF20."),
-          React.createElement(ColorInput, { labelText: "Mention side line", storageKey: "mentionLine" }),
-        ) : null,
         storage.mentionColorSource !== "discord" ? React.createElement(RN.View, { style: { gap: 8 } },
           React.createElement(RN.Text, { style: label }, "Message background"),
           React.createElement(Choice, {
@@ -2930,12 +2925,21 @@
             options: [{ value: true, label: "On" }, { value: false, label: "Off" }],
             onChange: value => set("mentionBackgroundEnabled", value),
           }),
+          storage.mentionColorSource === "toolkit" && storage.mentionBackgroundEnabled !== false
+            ? React.createElement(RN.View, { style: { gap: 8 } },
+              React.createElement(ColorInput, { labelText: "Background color", storageKey: "mentionBackground" }),
+              React.createElement(RN.Text, { style: text }, "8-digit hex is supported for transparency, e.g. #FF00FF20."),
+            )
+            : null,
           React.createElement(RN.Text, { style: label }, "Side line"),
           React.createElement(Choice, {
             value: storage.mentionLineEnabled !== false,
             options: [{ value: true, label: "On" }, { value: false, label: "Off" }],
             onChange: value => set("mentionLineEnabled", value),
           }),
+          storage.mentionColorSource === "toolkit" && storage.mentionLineEnabled !== false
+            ? React.createElement(ColorInput, { labelText: "Line color", storageKey: "mentionLine" })
+            : null,
           React.createElement(RN.Text, { style: label }, "Message text"),
           React.createElement(Choice, {
             value: storage.mentionTextMode,
