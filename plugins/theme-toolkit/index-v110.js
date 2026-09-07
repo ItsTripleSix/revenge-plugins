@@ -183,9 +183,6 @@
 
   const DEFAULTS = {
     ...APPEARANCE_DEFAULTS,
-    autoPaletteSeed: "#B026FF",
-    autoPaletteStyle: "spectrum",
-    autoPaletteScope: "all",
     toolkitProfiles: [],
   };
   const PROFILE_SETTING_KEYS = Object.freeze(Object.keys(APPEARANCE_DEFAULTS));
@@ -258,6 +255,17 @@
       delete storage.contextAutoPaletteCache;
       delete storage.contextAutoPaletteBase;
       storage.retiredContextAutoPalettesV116 = true;
+    }
+  } catch {}
+
+  // Remove the retired one-color palette generator without changing any
+  // appearance values that it may already have applied.
+  try {
+    if (storage.retiredPaletteGeneratorV117 !== true) {
+      delete storage.autoPaletteSeed;
+      delete storage.autoPaletteStyle;
+      delete storage.autoPaletteScope;
+      storage.retiredPaletteGeneratorV117 = true;
     }
   } catch {}
 
@@ -444,58 +452,6 @@
   function clamp(value, min, max) {
     return Math.max(min, Math.min(max, value));
   }
-  function byteHex(value) {
-    return Math.round(clamp(value, 0, 255)).toString(16).padStart(2, "0").toUpperCase();
-  }
-  function rgbToHsl(value) {
-    const rgb = rgbParts(value);
-    if (!rgb) return null;
-    const r = rgb.r / 255;
-    const g = rgb.g / 255;
-    const b = rgb.b / 255;
-    const max = Math.max(r, g, b);
-    const min = Math.min(r, g, b);
-    const delta = max - min;
-    let h = 0;
-    if (delta) {
-      if (max === r) h = ((g - b) / delta) % 6;
-      else if (max === g) h = (b - r) / delta + 2;
-      else h = (r - g) / delta + 4;
-      h *= 60;
-      if (h < 0) h += 360;
-    }
-    const l = (max + min) / 2;
-    const s = delta ? delta / (1 - Math.abs(2 * l - 1)) : 0;
-    return { h, s, l };
-  }
-  function hslToHex(hue, saturation, lightness) {
-    const h = ((hue % 360) + 360) % 360;
-    const s = clamp(saturation, 0, 1);
-    const l = clamp(lightness, 0, 1);
-    const c = (1 - Math.abs(2 * l - 1)) * s;
-    const x = c * (1 - Math.abs((h / 60) % 2 - 1));
-    const m = l - c / 2;
-    let rgb;
-    if (h < 60) rgb = [c, x, 0];
-    else if (h < 120) rgb = [x, c, 0];
-    else if (h < 180) rgb = [0, c, x];
-    else if (h < 240) rgb = [0, x, c];
-    else if (h < 300) rgb = [x, 0, c];
-    else rgb = [c, 0, x];
-    return `#${byteHex((rgb[0] + m) * 255)}${byteHex((rgb[1] + m) * 255)}${byteHex((rgb[2] + m) * 255)}`;
-  }
-  function paletteTone(seedHsl, hueShift = 0, lightnessShift = 0, forceVivid = false) {
-    const saturation = forceVivid ? Math.max(seedHsl.s, 0.76) : seedHsl.s;
-    const baseLightness = forceVivid ? clamp(seedHsl.l, 0.48, 0.62) : seedHsl.l;
-    return hslToHex(seedHsl.h + hueShift, saturation, clamp(baseLightness + lightnessShift, 0.2, 0.82));
-  }
-  function mixHex(background, foreground, foregroundWeight) {
-    const bg = rgbParts(background);
-    const fg = rgbParts(foreground);
-    if (!bg || !fg) return stripAlpha(foreground) ?? stripAlpha(background);
-    const weight = clamp(foregroundWeight, 0, 1);
-    return `#${byteHex(bg.r * (1 - weight) + fg.r * weight)}${byteHex(bg.g * (1 - weight) + fg.g * weight)}${byteHex(bg.b * (1 - weight) + fg.b * weight)}`;
-  }
   function selectedChannelId(guildId = null) {
     try {
       return SelectedChannelStore?.getCurrentlySelectedChannelId?.(guildId)
@@ -503,59 +459,6 @@
         ?? SelectedChannelStore?.getChannelId?.()
         ?? null;
     } catch { return null; }
-  }
-  function generateAutoPalette(seedValue, styleValue = "spectrum") {
-    const seed = stripAlpha(seedValue);
-    const hsl = rgbToHsl(seed);
-    if (!seed || !hsl) return null;
-    const style = ["spectrum", "analogous", "monochrome"].includes(styleValue) ? styleValue : "spectrum";
-    let reaction;
-    let home;
-    let search;
-    let notification;
-    let settings;
-    let gradient;
-    if (style === "analogous") {
-      reaction = paletteTone(hsl, 50, 0.04, true);
-      home = paletteTone(hsl, -35, 0.06, true);
-      search = paletteTone(hsl, 25, 0.12, true);
-      notification = paletteTone(hsl, -15, 0.08, true);
-      settings = paletteTone(hsl, 65, -0.02, true);
-      gradient = [paletteTone(hsl, -35, 0.04, true), seed, paletteTone(hsl, 35, 0.04, true)];
-    } else if (style === "monochrome") {
-      const anchor = clamp(hsl.l, 0.34, 0.66);
-      const tone = offset => hslToHex(hsl.h, hsl.s, clamp(anchor + offset, 0.12, 0.9));
-      reaction = tone(0.14);
-      home = tone(0.24);
-      search = tone(0.07);
-      notification = tone(-0.03);
-      settings = tone(-0.12);
-      gradient = [tone(-0.2), seed, tone(0.2)];
-    } else {
-      reaction = paletteTone(hsl, 120, 0, true);
-      home = paletteTone(hsl, 180, 0.04, true);
-      search = paletteTone(hsl, 60, 0.1, true);
-      notification = paletteTone(hsl, 240, 0.02, true);
-      settings = paletteTone(hsl, 300, 0.02, true);
-      gradient = [seed, paletteTone(hsl, 120, 0.02, true), paletteTone(hsl, 240, 0.02, true)];
-    }
-    return {
-      seed,
-      style,
-      smartAccent: seed,
-      selectedGuild: seed,
-      reaction,
-      home,
-      search,
-      notification,
-      settings,
-      mentionBackground: withAlpha(seed, 0.16),
-      mentionLine: seed,
-      mentionTag: style === "monochrome" ? search : gradient[0],
-      gradient,
-      folderBackground: mixHex(themeMessageBaseColor(), seed, 0.18),
-      folderAccent: seed,
-    };
   }
   function appearanceSnapshot() {
     const values = {};
@@ -719,45 +622,6 @@
       catch (error) { try { console.error("[ThemeToolkit] Discord reload failed", error); } catch {} }
     }, 750);
     return true;
-  }
-  function autoPaletteAppearanceValues(palette, scopeValue = "all") {
-    if (!palette) return null;
-    const values = {
-      uiAccentSource: "toolkit",
-      smartAccentColor: palette.smartAccent,
-      selectedGuildAccent: palette.selectedGuild,
-      reactionAccent: palette.reaction,
-      homeIconAccent: palette.home,
-      searchIconAccent: palette.search,
-      notificationIconAccent: palette.notification,
-      settingsIconAccent: palette.settings,
-    };
-    if (scopeValue !== "all") return values;
-    Object.assign(values, {
-      mentionColorSource: "toolkit",
-      mentionBackground: palette.mentionBackground,
-      mentionLine: palette.mentionLine,
-      mentionTagSource: "toolkit",
-      mentionTagMode: palette.style === "monochrome" ? "solid" : "gradient",
-      mentionTagColor: palette.mentionTag,
-      mentionTagGradient1: palette.gradient[0],
-      mentionTagGradient2: palette.gradient[1],
-      mentionTagGradient3: palette.gradient[2],
-      folderColorSource: "toolkit",
-      folderBackground: palette.folderBackground,
-      folderAccent: palette.folderAccent,
-      closedOutlineColorMode: palette.style === "monochrome" ? "custom" : "gradient",
-      closedOutlineColor: palette.seed,
-      closedGradient1: palette.gradient[0],
-      closedGradient2: palette.gradient[1],
-      closedGradient3: palette.gradient[2],
-      openOutlineColorMode: palette.style === "monochrome" ? "custom" : "gradient",
-      openOutlineColor: palette.seed,
-      openGradient1: palette.gradient[0],
-      openGradient2: palette.gradient[1],
-      openGradient3: palette.gradient[2],
-    });
-    return values;
   }
   function normalizePattern(value, fallback = "solid") {
     return ["solid", "dashed", "dotted", "segmented"].includes(value) ? value : fallback;
@@ -2645,7 +2509,6 @@
     const themeCfg = themeFolderConfig();
     const profiles = storedProfiles();
     const currentAppearance = appearanceSnapshot();
-    const autoPalette = generateAutoPalette(storage.autoPaletteSeed, storage.autoPaletteStyle);
     const page = { padding: 16, gap: 14 };
     const card = { backgroundColor: "#111214", borderRadius: 12, padding: 14, gap: 10 };
     const title = { color: "#F2F3F5", fontSize: 17, fontWeight: "700" };
@@ -2766,21 +2629,6 @@
         },
       ]);
     }
-    function applyPalette() {
-      const palette = generateAutoPalette(storage.autoPaletteSeed, storage.autoPaletteStyle);
-      if (!palette) { toast("Choose a valid palette seed color"); return; }
-      const values = autoPaletteAppearanceValues(palette, storage.autoPaletteScope);
-      applyValues(values);
-      if (scheduleDiscordReload()) toast(storage.autoPaletteScope === "all"
-        ? "Applying palette to the whole Toolkit…"
-        : "Applying palette to UI accents…");
-      else toast("Palette saved. Restart Discord to finish applying it.");
-    }
-    function setAutoPaletteOption(key, value) {
-      storage[key] = value;
-      forceUpdate();
-      refreshToolkitUI();
-    }
     function Choice({ value, options, onChange }) {
       return React.createElement(RN.View, { style: { flexDirection: "row", gap: 6, flexWrap: "wrap" } }, options.map(option => {
         const active = value === option.value;
@@ -2897,23 +2745,6 @@
         style: { color: danger ? "#FF6B6B" : "#F2F3F5", fontWeight: "700" },
       }, labelText));
     }
-    function PalettePreview({ palette }) {
-      if (!palette) return React.createElement(RN.Text, { style: text }, "Enter a valid six-digit seed color to preview the palette.");
-      const swatches = [
-        ["Indicator", palette.selectedGuild],
-        ["Reaction", palette.reaction],
-        ["Home", palette.home],
-        ["Search", palette.search],
-        ["Bell", palette.notification],
-        ["Settings", palette.settings],
-      ];
-      return React.createElement(RN.View, { style: { flexDirection: "row", flexWrap: "wrap", gap: 8 } }, swatches.map(([name, color]) =>
-        React.createElement(RN.View, { key: name, style: { width: 54, gap: 4, alignItems: "center" } },
-          React.createElement(RN.View, { style: { width: 40, height: 32, borderRadius: 7, backgroundColor: color, borderWidth: 1, borderColor: "#6D6F78" } }),
-          React.createElement(RN.Text, { numberOfLines: 1, style: { color: "#B5BAC1", fontSize: 10 } }, name),
-        ),
-      ));
-    }
     function OutlineCard({ stateName, prefix }) {
       const enabledKey = `${prefix}OutlineEnabled`;
       const modeKey = `${prefix}OutlineColorMode`;
@@ -3002,38 +2833,9 @@
       : "No custom theme active • Discord defaults available";
     return React.createElement(RN.ScrollView, { contentContainerStyle: page },
       React.createElement(RN.View, { style: card },
-        React.createElement(RN.Text, { style: title }, "Theme Toolkit v1.1.6 TEST"),
+        React.createElement(RN.Text, { style: title }, "Theme Toolkit v1.1.7 TEST"),
         React.createElement(RN.Text, { style: text }, activeThemeText),
-        React.createElement(RN.Text, { style: text }, "Generate coordinated palettes manually. Themes with Toolkit metadata, ordinary themes, and Discord without a custom theme are all supported."),
-      ),
-      React.createElement(RN.View, { style: card },
-        React.createElement(RN.Text, { style: title }, "Auto Palette"),
-        React.createElement(RN.Text, { style: text }, "Builds coordinated Toolkit colors from one seed. It does not edit your theme file or Discord's saved folder colors."),
-        React.createElement(ColorInput, { labelText: "Seed color", storageKey: "autoPaletteSeed" }),
-        React.createElement(RN.Text, { style: label }, "Palette style"),
-        React.createElement(Choice, {
-          value: storage.autoPaletteStyle,
-          options: [
-            { value: "spectrum", label: "Spectrum" },
-            { value: "analogous", label: "Analogous" },
-            { value: "monochrome", label: "Monochrome" },
-          ],
-          onChange: value => setAutoPaletteOption("autoPaletteStyle", value),
-        }),
-        React.createElement(RN.Text, { style: label }, "Apply to"),
-        React.createElement(Choice, {
-          value: storage.autoPaletteScope,
-          options: [
-            { value: "ui", label: "UI accents only" },
-            { value: "all", label: "Whole Toolkit" },
-          ],
-          onChange: value => setAutoPaletteOption("autoPaletteScope", value),
-        }),
-        React.createElement(PalettePreview, { palette: autoPalette }),
-        React.createElement(RN.Text, { style: text }, storage.autoPaletteScope === "all"
-          ? "Whole Toolkit applies the palette to UI accents, mention colors, folder colors, and folder-outline colors. Existing outline patterns and animations are preserved."
-          : "UI accents only changes server indicators, reactions, Home, Search, Notifications, and Settings colors."),
-        React.createElement(ActionButton, { labelText: "Apply palette & reload", onPress: applyPalette, disabled: !autoPalette }),
+        React.createElement(RN.Text, { style: text }, "Customize folders, mentions, outlines, and UI accents individually. Themes with Toolkit metadata, ordinary themes, and Discord without a custom theme are all supported."),
       ),
       React.createElement(RN.View, { style: card },
         React.createElement(RN.Text, { style: title }, `Profiles (${profiles.length}/${PROFILE_LIMIT})`),
