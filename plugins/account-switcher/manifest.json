@@ -1,0 +1,14 @@
+{
+  "name": "Account Switcher",
+  "description": "Restores Discord's native mobile multi-account switcher with Add/Manage Accounts and tap-to-switch directly in Revenge settings. Uses Discord's own saved-account system; no credential storage or external network handling.",
+  "authors": [
+    {
+      "name": "ItsTripleSix"
+    }
+  ],
+  "main": "index.js",
+  "hash": "e821b6d05eca6510e0a1698caeb9134c3ae3c194",
+  "vendetta": {
+    "icon": "UserIcon"
+  }
+}

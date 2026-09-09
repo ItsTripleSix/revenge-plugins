@@ -1,0 +1,14 @@
+{
+  "name": "Hidden Channels",
+  "description": "Show hidden server channel names while disabling Discord channel metadata obfuscation.",
+  "authors": [
+    {
+      "name": "ItsTripleSix"
+    }
+  ],
+  "main": "index-v3.js",
+  "hash": "f6602c8665602a74ed469faf82668c617ad1c335",
+  "vendetta": {
+    "icon": "LockIcon"
+  }
+}
